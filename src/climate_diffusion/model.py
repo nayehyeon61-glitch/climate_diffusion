@@ -160,12 +160,14 @@ class MonthlyLatentFlow(nn.Module):
         for index in range(integration_steps):
             time = torch.full(
                 (history.shape[0],),
-                (index + 0.5) * step,
+                index * step,
                 device=history.device,
                 dtype=history.dtype,
             )
-            midpoint = latent + 0.5 * step * self.vector_field(
-                latent, time, condition
+            first_velocity = self.vector_field(latent, time, condition)
+            midpoint = latent + 0.5 * step * first_velocity
+            midpoint_time = time + 0.5 * step
+            latent = latent + step * self.vector_field(
+                midpoint, midpoint_time, condition
             )
-            latent = latent + step * self.vector_field(midpoint, time, condition)
         return self.autoencoder.decode(latent)

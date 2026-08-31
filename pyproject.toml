@@ -22,6 +22,7 @@ test = ["pytest>=7"]
 prepare-climate-monthly-data = "climate_diffusion.data:main"
 train-climate-flow = "climate_diffusion.train:main"
 forecast-climate-flow = "climate_diffusion.inference:main"
+evaluate-climate-flow = "climate_diffusion.evaluation:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -60,9 +60,35 @@ def _coarsen_global_fields(
     return dataset.coarsen(factors, boundary="pad").mean(skipna=True) if factors else dataset
 
 
+def aggregate_monthly_fields(
+    dataset: xr.Dataset,
+    *,
+    complete_only: bool = True,
+) -> tuple[xr.Dataset, str]:
+    """Return causal monthly states labelled by the time they become available."""
+    dataset = dataset.sortby("time")
+    times = pd.DatetimeIndex(pd.to_datetime(dataset.time.values))
+    if len(times) < 2:
+        return dataset, "preaggregated_snapshot"
+    deltas = np.diff(times.values).astype("timedelta64[s]").astype(np.int64)
+    median_seconds = int(np.median(deltas))
+    if median_seconds >= 27 * 24 * 3600:
+        return dataset, "preaggregated_snapshot"
+
+    monthly = dataset.resample(time="MS").mean(skipna=True)
+    availability = pd.DatetimeIndex(pd.to_datetime(monthly.time.values)) + pd.offsets.MonthBegin(1)
+    monthly = monthly.assign_coords(time=availability.values.astype("datetime64[ns]"))
+    if complete_only:
+        latest_available = times[-1] + pd.to_timedelta(median_seconds, unit="s")
+        monthly = monthly.sel(time=monthly.time <= latest_available.to_datetime64())
+    return monthly, "calendar_month_mean_available_next_month"
+
+
 def _load_integrated_monthly(
     path: str | Path,
     months: pd.DatetimeIndex,
+    *,
+    availability_shift: bool,
 ) -> tuple[np.ndarray, list[str]]:
     value = str(path)
     frame = pd.read_parquet(value) if value.endswith(".parquet") else pd.read_csv(value)
@@ -77,6 +103,8 @@ def _load_integrated_monthly(
     if not numeric:
         raise ValueError("Integrated data has no numeric climate/track features")
     frame["month"] = frame["time"].dt.to_period("M").dt.to_timestamp()
+    if availability_shift:
+        frame["month"] = frame["month"] + pd.offsets.MonthBegin(1)
     monthly = frame.groupby("month", sort=True)[numeric].mean()
     aligned = monthly.reindex(months)
     values = aligned.to_numpy(np.float32)
@@ -107,7 +135,7 @@ def prepare_monthly_archive(
         if missing:
             raise ValueError(f"Missing requested variables: {missing}")
         dataset = dataset[list(selected_names)].sortby("time")
-        monthly = dataset.resample(time="MS").mean(skipna=True)
+        monthly, aggregation = aggregate_monthly_fields(dataset, complete_only=True)
         monthly = _coarsen_global_fields(
             monthly, target_lat_points, target_lon_points
         ).load()
@@ -146,7 +174,12 @@ def prepare_monthly_archive(
 
     field_dim = offset
     if integrated is not None:
-        integrated_values, integrated_names = _load_integrated_monthly(integrated, months)
+        integrated_values, integrated_names = _load_integrated_monthly(
+            integrated,
+            months,
+            availability_shift=aggregation
+            == "calendar_month_mean_available_next_month",
+        )
         blocks.append(integrated_values)
         feature_names.extend(integrated_names)
 
@@ -174,7 +207,9 @@ def prepare_monthly_archive(
         "field_dim": int(field_dim),
         "integrated_feature_names": feature_names[field_dim:],
         "variables": variable_schema,
-        "monthly_frequency": "calendar_month_start",
+        "monthly_frequency": "calendar_month",
+        "state_time_semantics": "availability_time",
+        "aggregation": aggregation,
         "target_lat_points": target_lat_points,
         "target_lon_points": target_lon_points,
     }

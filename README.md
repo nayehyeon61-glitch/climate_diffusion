@@ -18,7 +18,7 @@ flowchart TB
     subgraph DATA["Main-system data integration"]
         FIELD["ERA5/HRES global fields"]
         TABLE["IBTrACS + pressure-system table"]
-        MONTH["Calendar-month aggregation"]
+        MONTH["Causal completed-month aggregation"]
         STATE["Monthly state vector + schema"]
         FIELD --> MONTH
         TABLE --> MONTH
@@ -88,6 +88,8 @@ data/
 - `.schema.json`: 변수별 slice, 차원, 좌표, 통합 표 feature 목록
 - 전 지구 field는 지정한 저해상도 grid로 평균 pooling하여 초기 연구 비용을 줄임
 - 통합 표의 수치 feature는 동일 달 기준으로 평균하여 field state 뒤에 결합
+- 6시간/일 단위 원자료의 월평균은 해당 월이 끝난 다음 시각을 availability time으로
+  기록하며, 완료되지 않은 달은 추론 입력에서 제외
 
 IBTrACS 통합 표만으로는 전 지구 대기장을 복원할 수 없습니다. WeatherNext 대체
 runner를 만들려면 반드시 ERA5/HRES 같은 gridded field도 함께 학습해야 합니다.
@@ -103,7 +105,9 @@ train-climate-flow \
   --hidden-dim 256 \
   --epochs 100 \
   --batch-size 32 \
-  --output checkpoints/climate-flow-matching.pt
+  --test-fraction 0.1 \
+  --purge-windows 1 \
+  --output download/flow-matching/monthly-v1/climate-flow-monthly-v1.pt
 ```
 
 학습 경로는 다음과 같습니다.
@@ -138,8 +142,18 @@ flowchart LR
 +\lambda_z\|z_1\|_2^2.
 \]
 
-시간 순서대로 train/validation을 분리하고, train 구간에서만 정규화 통계를
-계산합니다. 최적 validation checkpoint와 metrics/metadata를 저장합니다.
+시간 순서대로 train/validation/test를 분리하며 경계 사이의 겹치는 window를
+`--purge-windows`만큼 제거합니다. 정규화 통계는 train 구간에서만 계산합니다.
+최적 validation checkpoint와 함께 다음 artifact를 저장합니다.
+
+```text
+climate-flow-monthly-v1.pt
+climate-flow-monthly-v1.metrics.json
+climate-flow-monthly-v1.metadata.json
+climate-flow-monthly-v1.manifest.json
+```
+
+manifest에는 SHA-256, 변수 schema, seed와 고정 test window가 기록됩니다.
 
 ## 4. 독립적인 월별 예측
 
@@ -155,6 +169,19 @@ forecast-climate-flow \
 
 각 ensemble member는 서로 다른 Gaussian latent에서 시작합니다. 여러 달을 요청하면
 생성한 다음 달 state를 history에 넣는 autoregressive 방식으로 진행합니다.
+
+학습에 사용하지 않은 test window만 평가하려면:
+
+```bash
+evaluate-climate-flow \
+  --checkpoint download/flow-matching/monthly-v1/climate-flow-monthly-v1.pt \
+  --archive data/monthly_climate_states.npz \
+  --ensemble-size 8 \
+  --output outputs/monthly-flow-evaluation.json
+```
+
+평가 파일에는 normalized RMSE/MAE/bias, ensemble CRPS/spread,
+persistence·climatology baseline과 변수별 raw-unit metric이 저장됩니다.
 
 ## 5. WeatherNext2를 유지하면서 선택적으로 대체
 
@@ -193,8 +220,9 @@ forecast = runner.rollout(
 - 입력: 학습 schema에 맞는 최소 `history_months`개월의 `xarray.Dataset`
 - 출력: 학습한 gridded 변수로 복원한 월별 `xarray.Dataset`
 - 시간 단위: 720시간을 1 model month로 정의
-- inference-only: `fit()`, optimizer, backward 경로 없음
-- provenance: `forecast_backend=flow_matching`, checkpoint 경로 기록
+- hard frozen inference: `eval()`, `requires_grad_(False)`, `inference_mode()` 적용
+- 로드 시 manifest SHA-256 검증
+- provenance: backend, checkpoint 경로·hash·format 기록
 
 통합 표 feature를 추론 history에도 사용하려면 schema에 기록된 원래 column 이름을
 월별 scalar data variable로 초기 `xarray.Dataset`에 포함합니다. 예를 들어
@@ -208,8 +236,29 @@ rollout 경계에서 어느 runner를 반환할지만 결정합니다.
 ## 6. 기존 GPT·double-loss 시스템과 연결
 
 Flow Matching 출력은 xarray이므로 main system의 tokenization 단계로 전달할 수
-있습니다. 단, 기존 WeatherNext tokenizer의 기본 최대 lead time은 15일이므로 월별
-출력에는 `max_lead_hours=720`인 별도 token 설정이 필요합니다.
+있습니다. `typnonn_preesure_data_loader`의 `prepare-weathernext-tokens`에서
+`--backend flow_matching`을 선택하면 frozen checkpoint를 불러오고 720시간 token
+cache를 만듭니다.
+
+```bash
+prepare-weathernext-tokens \
+  --backend flow_matching \
+  --checkpoint download/flow-matching/monthly-v1/climate-flow-monthly-v1.pt \
+  --initial-state data/era5_hres_history.zarr \
+  --storm-id TEST --init-time 2025-01-01T00:00:00Z \
+  --storm-lat 20 --storm-lon 130 \
+  --horizon-hours 720 --max-lead-hours 720 \
+  --output-dir data/flow_matching_tokens
+
+train-weathernext-transformer \
+  --integrated data/integrated.parquet \
+  --distribution data/distribution/spatial_distribution.csv \
+  --weathernext-token-dir data/flow_matching_tokens \
+  --require-checkpoint-kind flow_matching
+```
+
+이 경로에서는 Flow parameter를 optimizer에 넣지 않습니다. 후단의 GPT state,
+GRU/Transformer와 distribution CE + track MSE double loss만 학습됩니다.
 
 권장 실험군:
 

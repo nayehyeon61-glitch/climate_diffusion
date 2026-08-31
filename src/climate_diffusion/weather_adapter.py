@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from .data import reconstruct_dataset, vectorize_dataset
+from .data import aggregate_monthly_fields, reconstruct_dataset, vectorize_dataset
 from .inference import LatentFlowForecaster
 
 HOURS_PER_MODEL_MONTH = 30 * 24
@@ -36,9 +36,13 @@ class FlowMatchingWeatherRunner:
         return {
             "forecast_backend": "flow_matching",
             "forecast_checkpoint": str(self.checkpoint_path),
+            "forecast_checkpoint_kind": "flow_matching",
+            "forecast_checkpoint_sha256": self.forecaster.checkpoint_sha256,
+            "forecast_checkpoint_format": self.forecaster.checkpoint_format,
             "forecast_step_hours": HOURS_PER_MODEL_MONTH,
             "weather_next_replacement": True,
             "inference_only": True,
+            "parameters_frozen": True,
         }
 
     def rollout(self, initial_state: xr.Dataset, horizon_hours: int) -> xr.Dataset:
@@ -49,7 +53,7 @@ class FlowMatchingWeatherRunner:
         months = horizon_hours // HOURS_PER_MODEL_MONTH
         if "time" not in initial_state.coords:
             raise ValueError("Monthly flow initial state requires a time coordinate")
-        monthly_state = initial_state.sortby("time").resample(time="MS").mean(skipna=True)
+        monthly_state, _ = aggregate_monthly_fields(initial_state, complete_only=True)
         vectors = vectorize_dataset(
             monthly_state,
             self.forecaster.schema,
@@ -75,7 +79,8 @@ class FlowMatchingWeatherRunner:
             reconstruct_dataset(
                 prediction[index],
                 self.forecaster.schema,
-                last_time + pd.DateOffset(months=index + 1),
+                last_time
+                + pd.Timedelta(hours=HOURS_PER_MODEL_MONTH * (index + 1)),
             )
             for index in range(months)
         ]

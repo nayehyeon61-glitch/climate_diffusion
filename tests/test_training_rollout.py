@@ -1,8 +1,12 @@
+import json
+
 import numpy as np
 import pandas as pd
 import xarray as xr
 
 from climate_diffusion.data import prepare_monthly_archive
+from climate_diffusion.evaluation import evaluate_flow_checkpoint
+from climate_diffusion.inference import LatentFlowForecaster
 from climate_diffusion.train import train_flow_model
 from climate_diffusion.weather_adapter import FlowMatchingWeatherRunner
 
@@ -35,7 +39,13 @@ def test_one_epoch_checkpoint_runs_as_monthly_weather_replacement(tmp_path):
         epochs=1,
         batch_size=2,
         validation_fraction=0.25,
+        test_fraction=0.15,
     )
+    manifest = json.loads(checkpoint.with_suffix(".manifest.json").read_text())
+    assert manifest["checkpoint_sha256"]
+    assert manifest["split"]["test"]
+    forecaster = LatentFlowForecaster(checkpoint, device="cpu")
+    assert all(not parameter.requires_grad for parameter in forecaster.model.parameters())
     runner = FlowMatchingWeatherRunner(
         checkpoint, integration_steps=2, device="cpu"
     )
@@ -43,4 +53,17 @@ def test_one_epoch_checkpoint_runs_as_monthly_weather_replacement(tmp_path):
     assert forecast.sizes["time"] == 1
     assert forecast["msl"].shape == (1, 1, 2)
     assert forecast.attrs["forecast_backend"] == "flow_matching"
+    assert forecast.attrs["forecast_checkpoint_kind"] == "flow_matching"
     assert forecast.attrs["weather_next_replacement"] is True
+
+    metrics_path = evaluate_flow_checkpoint(
+        checkpoint,
+        archive,
+        tmp_path / "evaluation.json",
+        ensemble_size=2,
+        integration_steps=2,
+        device="cpu",
+    )
+    metrics = json.loads(metrics_path.read_text())
+    assert metrics["test_windows"] == manifest["split"]["test"]
+    assert np.isfinite(metrics["normalized_overall"]["crps"])

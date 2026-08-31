@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 from pathlib import Path
 
 import numpy as np
@@ -26,16 +28,39 @@ class LatentFlowForecaster:
         payload = torch.load(
             self.checkpoint_path, map_location=self.device, weights_only=False
         )
-        if payload.get("format") != "climate_diffusion.monthly_latent_flow.v1":
+        if payload.get("format") not in {
+            "climate_diffusion.monthly_latent_flow.v1",
+            "climate_diffusion.monthly_latent_flow.v2",
+        }:
             raise ValueError("Unsupported climate flow checkpoint format")
         self.config = FlowModelConfig(**payload["model_config"])
         self.model = MonthlyLatentFlow(self.config).to(self.device)
         self.model.load_state_dict(payload["model"])
-        self.model.eval()
+        self.model.eval().requires_grad_(False)
+        if any(parameter.requires_grad for parameter in self.model.parameters()):
+            raise RuntimeError("Flow checkpoint could not be frozen")
         self.state_mean = payload["state_mean"].to(self.device)
         self.state_scale = payload["state_scale"].to(self.device)
         self.schema = payload["schema"]
         self.training_metadata = payload.get("training", {})
+        self.checkpoint_format = str(payload["format"])
+        self.checkpoint_sha256 = self._verify_manifest()
+
+    def _verify_manifest(self) -> str:
+        hasher = hashlib.sha256()
+        with self.checkpoint_path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                hasher.update(block)
+        digest = hasher.hexdigest()
+        manifest_path = self.checkpoint_path.with_suffix(".manifest.json")
+        if manifest_path.is_file():
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            expected = manifest.get("checkpoint_sha256")
+            if expected and expected != digest:
+                raise ValueError(
+                    f"Checkpoint checksum mismatch for {self.checkpoint_path}"
+                )
+        return digest
 
     def _normalise(self, values: np.ndarray) -> torch.Tensor:
         tensor = torch.as_tensor(values, dtype=torch.float32, device=self.device)
@@ -45,6 +70,7 @@ class LatentFlowForecaster:
         result = values * self.state_scale + self.state_mean
         return result.detach().cpu().numpy().astype(np.float32)
 
+    @torch.inference_mode()
     def forecast(
         self,
         history_states: np.ndarray,

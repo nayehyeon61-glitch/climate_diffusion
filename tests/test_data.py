@@ -5,11 +5,23 @@ import pandas as pd
 import xarray as xr
 
 from climate_diffusion.data import (
+    aggregate_monthly_fields,
     load_monthly_archive,
     prepare_monthly_archive,
     reconstruct_dataset,
     vectorize_dataset,
 )
+
+
+def test_high_frequency_monthly_mean_is_labelled_when_it_becomes_available():
+    times = pd.date_range("2020-01-01", "2020-02-01", freq="6h")
+    fields = xr.Dataset(
+        {"msl": (("time",), np.arange(len(times), dtype=np.float32))},
+        coords={"time": times},
+    )
+    monthly, aggregation = aggregate_monthly_fields(fields)
+    assert aggregation == "calendar_month_mean_available_next_month"
+    assert list(pd.to_datetime(monthly.time.values)) == [pd.Timestamp("2020-02-01")]
 
 
 def test_main_system_data_is_combined_with_monthly_fields(tmp_path):
@@ -55,4 +67,3 @@ def test_main_system_data_is_combined_with_monthly_fields(tmp_path):
     assert vectors.shape == states.shape
     rebuilt = reconstruct_dataset(states[-1], schema, pd.Timestamp("2020-09-01"))
     assert rebuilt["msl"].shape == (1, 2, 3)
-

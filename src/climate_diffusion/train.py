@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,59 @@ from torch.utils.data import DataLoader
 from .config import FlowLossConfig, FlowModelConfig
 from .data import MonthlyWindowDataset, load_monthly_archive
 from .model import MonthlyLatentFlow
+
+
+@dataclass(frozen=True)
+class TemporalSplit:
+    train: list[int]
+    validation: list[int]
+    test: list[int]
+    purge_windows: int
+
+
+def build_purged_temporal_split(
+    sample_count: int,
+    *,
+    validation_fraction: float,
+    test_fraction: float,
+    purge_windows: int,
+) -> TemporalSplit:
+    """Create ordered train/validation/test windows with embargoed boundaries."""
+    if sample_count < 3:
+        raise ValueError("At least three forecast windows are required")
+    if not 0.0 < validation_fraction < 0.5:
+        raise ValueError("validation_fraction must be between 0 and 0.5")
+    if not 0.0 < test_fraction < 0.5:
+        raise ValueError("test_fraction must be between 0 and 0.5")
+    if validation_fraction + test_fraction >= 0.8:
+        raise ValueError("validation_fraction + test_fraction must be below 0.8")
+    if purge_windows < 0:
+        raise ValueError("purge_windows cannot be negative")
+
+    validation_count = max(1, int(sample_count * validation_fraction))
+    test_count = max(1, int(sample_count * test_fraction))
+    train_count = sample_count - validation_count - test_count - 2 * purge_windows
+    if train_count < 1:
+        raise ValueError(
+            "Not enough windows for purged train/validation/test splits; "
+            "reduce fractions or purge_windows"
+        )
+    validation_start = train_count + purge_windows
+    test_start = validation_start + validation_count + purge_windows
+    return TemporalSplit(
+        train=list(range(train_count)),
+        validation=list(range(validation_start, validation_start + validation_count)),
+        test=list(range(test_start, sample_count)),
+        purge_windows=purge_windows,
+    )
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _epoch(
@@ -58,21 +112,23 @@ def train_flow_model(
     batch_size: int = 32,
     learning_rate: float = 1e-4,
     validation_fraction: float = 0.2,
+    test_fraction: float = 0.1,
+    purge_windows: int = 1,
     seed: int = 7,
 ) -> Path:
-    if not 0.0 < validation_fraction < 0.5:
-        raise ValueError("validation_fraction must be between 0 and 0.5")
     torch.manual_seed(seed)
     np.random.seed(seed)
     states, times, schema = load_monthly_archive(archive_path)
     sample_count = len(states) - history_months - lead_months + 1
-    if sample_count < 2:
-        raise ValueError("Not enough monthly states for temporal train/validation splits")
-    train_count = max(1, int(sample_count * (1.0 - validation_fraction)))
-    if train_count >= sample_count:
-        train_count = sample_count - 1
+    split = build_purged_temporal_split(
+        sample_count,
+        validation_fraction=validation_fraction,
+        test_fraction=test_fraction,
+        purge_windows=purge_windows,
+    )
 
-    normalization_end = train_count + history_months + lead_months - 1
+    last_train_start = split.train[-1]
+    normalization_end = last_train_start + history_months + lead_months
     state_mean = states[:normalization_end].mean(axis=0).astype(np.float32)
     state_scale = states[:normalization_end].std(axis=0).astype(np.float32)
     state_scale = np.where(state_scale > 1e-6, state_scale, 1.0).astype(np.float32)
@@ -82,13 +138,13 @@ def train_flow_model(
         normalized,
         history_months,
         lead_months,
-        indices=list(range(train_count)),
+        indices=split.train,
     )
     validation_dataset = MonthlyWindowDataset(
         normalized,
         history_months,
         lead_months,
-        indices=list(range(train_count, sample_count)),
+        indices=split.validation,
     )
     generator = torch.Generator().manual_seed(seed)
     train_loader = DataLoader(
@@ -131,7 +187,7 @@ def train_flow_model(
             best_validation = validation_metrics["loss"]
             torch.save(
                 {
-                    "format": "climate_diffusion.monthly_latent_flow.v1",
+                    "format": "climate_diffusion.monthly_latent_flow.v2",
                     "model": model.state_dict(),
                     "model_config": asdict(model_config),
                     "loss_config": asdict(loss_config),
@@ -145,6 +201,7 @@ def train_flow_model(
                         "first_time": str(times[0]),
                         "last_time": str(times[-1]),
                         "best_validation_loss": best_validation,
+                        "split": asdict(split),
                     },
                 },
                 output,
@@ -153,15 +210,40 @@ def train_flow_model(
     output.with_suffix(".metrics.json").write_text(
         json.dumps(history, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
+    checkpoint_sha256 = _sha256(output)
     output.with_suffix(".metadata.json").write_text(
         json.dumps(
             {
                 "checkpoint_kind": "monthly_latent_flow_matching",
-                "forecast_step": "1 calendar month",
+                "checkpoint_format": "climate_diffusion.monthly_latent_flow.v2",
+                "checkpoint_sha256": checkpoint_sha256,
+                "forecast_step": "720 hours over monthly aggregate targets",
                 "history_months": history_months,
                 "state_dim": states.shape[1],
                 "weather_next_compatible_runner": True,
                 "inference_ready": True,
+                "frozen_inference_required": True,
+                "split": asdict(split),
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    output.with_suffix(".manifest.json").write_text(
+        json.dumps(
+            {
+                "format": "climate_diffusion.artifact.v1",
+                "checkpoint": output.name,
+                "checkpoint_sha256": checkpoint_sha256,
+                "metrics": output.with_suffix(".metrics.json").name,
+                "metadata": output.with_suffix(".metadata.json").name,
+                "archive": str(Path(archive_path)),
+                "schema_format": schema.get("format"),
+                "variables": [item["name"] for item in schema["variables"]],
+                "split": asdict(split),
+                "seed": seed,
             },
             indent=2,
             ensure_ascii=False,
@@ -183,8 +265,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--validation-fraction", type=float, default=0.2)
+    parser.add_argument("--test-fraction", type=float, default=0.1)
+    parser.add_argument("--purge-windows", type=int, default=1)
     parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--output", default="checkpoints/climate-flow-matching.pt")
+    parser.add_argument(
+        "--output",
+        default="download/flow-matching/monthly-v1/climate-flow-monthly-v1.pt",
+    )
     args = parser.parse_args(argv)
     path = train_flow_model(
         args.archive,
@@ -197,6 +284,8 @@ def main(argv: list[str] | None = None) -> int:
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         validation_fraction=args.validation_fraction,
+        test_fraction=args.test_fraction,
+        purge_windows=args.purge_windows,
         seed=args.seed,
     )
     print(path)
