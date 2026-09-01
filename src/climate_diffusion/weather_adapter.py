@@ -8,7 +8,14 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from .data import aggregate_monthly_fields, reconstruct_dataset, vectorize_dataset
+from .data import (
+    aggregate_monthly_fields,
+    auxiliary_from_dataset,
+    reconstruct_dataset,
+    reconstruct_spatial_dataset,
+    spatialize_dataset,
+    vectorize_dataset,
+)
 from .inference import LatentFlowForecaster
 
 HOURS_PER_MODEL_MONTH = 30 * 24
@@ -54,13 +61,23 @@ class FlowMatchingWeatherRunner:
         if "time" not in initial_state.coords:
             raise ValueError("Monthly flow initial state requires a time coordinate")
         monthly_state, _ = aggregate_monthly_fields(initial_state, complete_only=True)
-        vectors = vectorize_dataset(
-            monthly_state,
-            self.forecaster.schema,
-            integrated_defaults=np.asarray(
-                self.forecaster.state_mean.detach().cpu(), dtype=np.float32
-            ),
-        )
+        spatial = self.forecaster.schema.get("layout") == "spatial"
+        if spatial:
+            vectors = spatialize_dataset(monthly_state, self.forecaster.schema)
+            auxiliary = auxiliary_from_dataset(
+                monthly_state,
+                self.forecaster.schema,
+                self.forecaster.auxiliary_mean.detach().cpu().numpy(),
+            )
+        else:
+            vectors = vectorize_dataset(
+                monthly_state,
+                self.forecaster.schema,
+                integrated_defaults=np.asarray(
+                    self.forecaster.state_mean.detach().cpu(), dtype=np.float32
+                ),
+            )
+            auxiliary = None
         required = self.forecaster.config.history_months
         if vectors.shape[0] < required:
             raise ValueError(
@@ -73,14 +90,15 @@ class FlowMatchingWeatherRunner:
             ensemble_size=1,
             integration_steps=self.integration_steps,
             seed=self.seed,
+            history_auxiliary=None if auxiliary is None else auxiliary[-required:],
         )[0]
         last_time = pd.Timestamp(monthly_state.time.values[-1])
+        reconstruct = reconstruct_spatial_dataset if spatial else reconstruct_dataset
         outputs = [
-            reconstruct_dataset(
+            reconstruct(
                 prediction[index],
                 self.forecaster.schema,
-                last_time
-                + pd.Timedelta(hours=HOURS_PER_MODEL_MONTH * (index + 1)),
+                last_time + pd.Timedelta(hours=HOURS_PER_MODEL_MONTH * (index + 1)),
             )
             for index in range(months)
         ]

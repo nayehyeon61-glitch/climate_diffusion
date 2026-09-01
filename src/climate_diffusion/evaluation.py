@@ -9,14 +9,19 @@ from typing import Any
 
 import numpy as np
 
-from .data import load_monthly_archive
+from .data import load_auxiliary_states, load_monthly_archive
 from .inference import LatentFlowForecaster
 
 
 def _ensemble_crps(samples: np.ndarray, target: np.ndarray) -> float:
     accuracy = np.abs(samples - target[None, :]).mean()
-    pairwise = np.abs(samples[:, None, :] - samples[None, :, :]).mean()
-    return float(accuracy - 0.5 * pairwise)
+    ordered = np.sort(samples, axis=0)
+    members = samples.shape[0]
+    coefficients = (2 * np.arange(members) - members + 1).reshape(
+        (members,) + (1,) * (samples.ndim - 1)
+    )
+    half_pairwise = float((ordered * coefficients).sum(axis=0).mean() / (members**2))
+    return float(accuracy - half_pairwise)
 
 
 def _error_metrics(prediction: np.ndarray, target: np.ndarray) -> dict[str, float]:
@@ -42,8 +47,9 @@ def evaluate_flow_checkpoint(
     if min(ensemble_size, integration_steps) < 1:
         raise ValueError("ensemble_size and integration_steps must be positive")
     states, times, schema = load_monthly_archive(archive_path)
+    auxiliary = load_auxiliary_states(archive_path, schema)
     forecaster = LatentFlowForecaster(checkpoint_path, device=device)
-    if schema["state_dim"] != forecaster.config.state_dim:
+    if int(schema["state_dim"]) != forecaster.config.state_dim:
         raise ValueError("Evaluation archive does not match checkpoint state dimension")
 
     training = forecaster.training_metadata
@@ -70,6 +76,11 @@ def evaluate_flow_checkpoint(
             ensemble_size=ensemble_size,
             integration_steps=integration_steps,
             seed=seed + case_number * ensemble_size,
+            history_auxiliary=(
+                None
+                if auxiliary is None
+                else np.asarray(auxiliary[start : start + history_months])
+            ),
         )[:, 0, :]
         target = states[target_index]
         ensemble_mean = samples.mean(axis=0)
@@ -113,9 +124,16 @@ def evaluate_flow_checkpoint(
 
     by_variable = {}
     for variable in schema["variables"]:
-        start, end = variable["slice"]
+        if schema.get("layout") == "spatial":
+            start, end = variable["channel_slice"]
+            selected_prediction = prediction_array[:, start:end]
+            selected_target = target_array[:, start:end]
+        else:
+            start, end = variable["slice"]
+            selected_prediction = prediction_array[:, start:end]
+            selected_target = target_array[:, start:end]
         by_variable[variable["name"]] = _error_metrics(
-            prediction_array[:, start:end], target_array[:, start:end]
+            selected_prediction, selected_target
         )
 
     result = {

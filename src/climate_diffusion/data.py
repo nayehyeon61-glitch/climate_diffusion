@@ -122,8 +122,11 @@ def prepare_monthly_archive(
     variables: tuple[str, ...] | None = None,
     target_lat_points: int = 18,
     target_lon_points: int = 36,
+    layout: str = "vector",
 ) -> tuple[Path, Path]:
     """Aggregate fields and the main-system table into one monthly state archive."""
+    if layout not in {"vector", "spatial"}:
+        raise ValueError("layout must be 'vector' or 'spatial'")
     if min(target_lat_points, target_lon_points) < 1:
         raise ValueError("Target grid dimensions must be positive")
     with _open_dataset(fields) as source:
@@ -136,13 +139,26 @@ def prepare_monthly_archive(
             raise ValueError(f"Missing requested variables: {missing}")
         dataset = dataset[list(selected_names)].sortby("time")
         monthly, aggregation = aggregate_monthly_fields(dataset, complete_only=True)
-        monthly = _coarsen_global_fields(
-            monthly, target_lat_points, target_lon_points
-        ).load()
+        monthly = _coarsen_global_fields(monthly, target_lat_points, target_lon_points)
+        if layout == "vector":
+            monthly = monthly.load()
 
     months = pd.DatetimeIndex(pd.to_datetime(monthly.time.values))
     if len(months) < 2:
         raise ValueError("At least two monthly field states are required")
+
+    if layout == "spatial":
+        return _write_spatial_archive(
+            monthly,
+            selected_names,
+            months,
+            output,
+            fields=fields,
+            integrated=integrated,
+            aggregation=aggregation,
+            target_lat_points=target_lat_points,
+            target_lon_points=target_lon_points,
+        )
 
     blocks = []
     variable_schema = []
@@ -201,6 +217,7 @@ def prepare_monthly_archive(
     schema_path = output_path.with_suffix(".schema.json")
     schema = {
         "format": "climate_diffusion.monthly_state.v1",
+        "layout": "vector",
         "source_fields": str(fields),
         "source_integrated": None if integrated is None else str(integrated),
         "state_dim": int(states.shape[1]),
@@ -219,8 +236,131 @@ def prepare_monthly_archive(
     return output_path, schema_path
 
 
+def _write_spatial_archive(
+    monthly: xr.Dataset,
+    selected_names: tuple[str, ...],
+    months: pd.DatetimeIndex,
+    output: str | Path,
+    *,
+    fields: str | Path,
+    integrated: str | Path | None,
+    aggregation: str,
+    target_lat_points: int,
+    target_lon_points: int,
+) -> tuple[Path, Path]:
+    """Write a memory-mapped spatial archive without materialising every month."""
+    if "lat" not in monthly.dims or "lon" not in monthly.dims:
+        raise ValueError("Spatial layout requires latitude and longitude dimensions")
+    height, width = int(monthly.sizes["lat"]), int(monthly.sizes["lon"])
+    variable_schema: list[dict[str, Any]] = []
+    channel_offset = 0
+    channel_names: list[str] = []
+    for name in selected_names:
+        array = monthly[name]
+        if "lat" not in array.dims or "lon" not in array.dims:
+            raise ValueError(f"Spatial variable {name!r} must contain lat and lon dimensions")
+        non_spatial = tuple(
+            dim for dim in array.dims if dim not in {"time", "lat", "lon"}
+        )
+        non_spatial_shape = [int(array.sizes[dim]) for dim in non_spatial]
+        channels = int(np.prod(non_spatial_shape, dtype=np.int64)) if non_spatial else 1
+        variable_schema.append(
+            {
+                "name": name,
+                "dims": list(non_spatial) + ["lat", "lon"],
+                "non_spatial_dims": list(non_spatial),
+                "non_spatial_shape": non_spatial_shape,
+                "shape": non_spatial_shape + [height, width],
+                "channel_slice": [channel_offset, channel_offset + channels],
+                "coords": {
+                    dim: _json_values(np.asarray(array.coords[dim].values))
+                    for dim in (*non_spatial, "lat", "lon")
+                    if dim in array.coords and array.coords[dim].dims == (dim,)
+                },
+                "attrs": {key: str(value) for key, value in array.attrs.items()},
+            }
+        )
+        channel_names.extend(f"field:{name}:{index}" for index in range(channels))
+        channel_offset += channels
+
+    output_path = Path(output)
+    if output_path.suffix:
+        raise ValueError(
+            "Spatial archives are directories; use a path such as data/monthly_climate_spatial"
+        )
+    output_path.mkdir(parents=True, exist_ok=True)
+    states = np.lib.format.open_memmap(
+        output_path / "states.npy",
+        mode="w+",
+        dtype=np.float32,
+        shape=(len(months), channel_offset, height, width),
+    )
+    observed_fraction = np.zeros((len(months), channel_offset), dtype=np.float32)
+    for time_index in range(len(months)):
+        for variable in variable_schema:
+            array = monthly[variable["name"]].isel(time=time_index).transpose(
+                *variable["dims"]
+            )
+            values = np.asarray(array.values, dtype=np.float32).reshape(-1, height, width)
+            start, end = variable["channel_slice"]
+            observed_fraction[time_index, start:end] = np.isfinite(values).mean(axis=(1, 2))
+            states[time_index, start:end] = np.nan_to_num(values)
+    states.flush()
+    np.save(output_path / "times.npy", months.values.astype("datetime64[ns]"))
+    np.save(output_path / "observed_fraction.npy", observed_fraction)
+
+    auxiliary_names: list[str] = []
+    auxiliary_values = np.empty((len(months), 0), dtype=np.float32)
+    if integrated is not None:
+        auxiliary_values, auxiliary_names = _load_integrated_monthly(
+            integrated,
+            months,
+            availability_shift=aggregation == "calendar_month_mean_available_next_month",
+        )
+    np.save(output_path / "auxiliary.npy", auxiliary_values.astype(np.float32))
+    schema_path = output_path / "schema.json"
+    schema = {
+        "format": "climate_diffusion.monthly_spatial.v2",
+        "layout": "spatial",
+        "storage": "npy_memmap_directory",
+        "source_fields": str(fields),
+        "source_integrated": None if integrated is None else str(integrated),
+        "state_dim": int(channel_offset * height * width),
+        "spatial_channels": channel_offset,
+        "grid_shape": [height, width],
+        "channel_names": channel_names,
+        "auxiliary_feature_names": auxiliary_names,
+        "auxiliary_dim": len(auxiliary_names),
+        "variables": variable_schema,
+        "coords": {
+            "lat": _json_values(np.asarray(monthly.lat.values)),
+            "lon": _json_values(np.asarray(monthly.lon.values)),
+        },
+        "monthly_frequency": "calendar_month",
+        "state_time_semantics": "availability_time",
+        "aggregation": aggregation,
+        "target_lat_points": target_lat_points,
+        "target_lon_points": target_lon_points,
+    }
+    schema_path.write_text(
+        json.dumps(schema, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    return output_path, schema_path
+
+
 def load_monthly_archive(path: str | Path) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     archive_path = Path(path)
+    if archive_path.is_dir():
+        schema = json.loads((archive_path / "schema.json").read_text(encoding="utf-8"))
+        states = np.load(archive_path / "states.npy", mmap_mode="r")
+        times = np.load(archive_path / "times.npy", mmap_mode="r").astype("datetime64[ns]")
+        expected = (
+            schema["spatial_channels"],
+            *schema["grid_shape"],
+        )
+        if states.ndim != 4 or states.shape[1:] != expected:
+            raise ValueError("Spatial monthly archive does not match its schema")
+        return states, times, schema
     with np.load(archive_path, allow_pickle=False) as archive:
         states = archive["states"].astype(np.float32)
         times = archive["times"].astype("datetime64[ns]")
@@ -230,6 +370,16 @@ def load_monthly_archive(path: str | Path) -> tuple[np.ndarray, np.ndarray, dict
     if states.ndim != 2 or states.shape[1] != schema["state_dim"]:
         raise ValueError("Monthly archive does not match its schema")
     return states, times, schema
+
+
+def load_auxiliary_states(path: str | Path, schema: dict[str, Any]) -> np.ndarray | None:
+    archive_path = Path(path)
+    if schema.get("layout") != "spatial" or not archive_path.is_dir():
+        return None
+    values = np.load(archive_path / "auxiliary.npy", mmap_mode="r")
+    if values.ndim != 2 or values.shape[1] != int(schema.get("auxiliary_dim", 0)):
+        raise ValueError("Spatial auxiliary archive does not match its schema")
+    return values
 
 
 @dataclass(frozen=True)
@@ -245,10 +395,25 @@ class MonthlyWindowDataset(Dataset):
         history_months: int,
         lead_months: int = 1,
         indices: list[int] | None = None,
+        *,
+        mean: np.ndarray | None = None,
+        scale: np.ndarray | None = None,
+        auxiliary_states: np.ndarray | None = None,
+        auxiliary_mean: np.ndarray | None = None,
+        auxiliary_scale: np.ndarray | None = None,
+        patch_size: tuple[int, int] | None = None,
+        random_crop: bool = False,
     ):
         if min(history_months, lead_months) < 1:
             raise ValueError("history_months and lead_months must be positive")
-        self.states = torch.as_tensor(states, dtype=torch.float32)
+        self.states = states
+        self.mean = None if mean is None else np.asarray(mean, dtype=np.float32)
+        self.scale = None if scale is None else np.asarray(scale, dtype=np.float32)
+        self.auxiliary_states = auxiliary_states
+        self.auxiliary_mean = auxiliary_mean
+        self.auxiliary_scale = auxiliary_scale
+        self.patch_size = patch_size
+        self.random_crop = random_crop
         self.history_months = history_months
         self.lead_months = lead_months
         last_start = len(states) - history_months - lead_months + 1
@@ -263,10 +428,44 @@ class MonthlyWindowDataset(Dataset):
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
         start = self.indices[index]
         target_index = start + self.history_months + self.lead_months - 1
-        return {
-            "history": self.states[start : start + self.history_months],
-            "target": self.states[target_index],
+        history = np.asarray(
+            self.states[start : start + self.history_months], dtype=np.float32
+        )
+        target = np.asarray(self.states[target_index], dtype=np.float32)
+        if self.mean is not None and self.scale is not None:
+            history = (history - self.mean) / self.scale
+            target = (target - self.mean) / self.scale
+        if self.patch_size is not None:
+            if history.ndim != 4:
+                raise ValueError("patch_size is only valid for [time,channel,lat,lon] states")
+            patch_height, patch_width = self.patch_size
+            height, width = history.shape[-2:]
+            if patch_height > height or patch_width > width:
+                raise ValueError("patch_size cannot exceed the archive grid")
+            if self.random_crop:
+                top = int(torch.randint(height - patch_height + 1, (1,)).item())
+                left = int(torch.randint(width, (1,)).item())
+            else:
+                top = (height - patch_height) // 2
+                left = (width - patch_width) // 2
+            lon_index = np.arange(left, left + patch_width) % width
+            history = np.take(history[..., top : top + patch_height, :], lon_index, axis=-1)
+            target = np.take(target[..., top : top + patch_height, :], lon_index, axis=-1)
+        item = {
+            "history": torch.as_tensor(history.copy(), dtype=torch.float32),
+            "target": torch.as_tensor(target.copy(), dtype=torch.float32),
         }
+        if self.auxiliary_states is not None:
+            auxiliary = np.asarray(
+                self.auxiliary_states[start : start + self.history_months],
+                dtype=np.float32,
+            )
+            if self.auxiliary_mean is not None and self.auxiliary_scale is not None:
+                auxiliary = (auxiliary - self.auxiliary_mean) / self.auxiliary_scale
+            item["history_auxiliary"] = torch.as_tensor(
+                auxiliary.copy(), dtype=torch.float32
+            )
+        return item
 
 
 def vectorize_dataset(
@@ -348,6 +547,90 @@ def reconstruct_dataset(
     return xr.Dataset(data_vars=data_vars, coords=coords)
 
 
+def spatialize_dataset(dataset: xr.Dataset, schema: dict[str, Any]) -> np.ndarray:
+    """Map an xarray history to ``[time, channel, lat, lon]`` spatial states."""
+    if schema.get("layout") != "spatial":
+        raise ValueError("spatialize_dataset requires a spatial schema")
+    dataset = _normalise_coordinates(dataset)
+    if "time" not in dataset.dims:
+        dataset = dataset.expand_dims(time=[pd.Timestamp.utcnow().to_datetime64()])
+    requested_lat = np.asarray(schema["coords"]["lat"])
+    requested_lon = np.asarray(schema["coords"]["lon"])
+    result = np.zeros(
+        (
+            dataset.sizes["time"],
+            schema["spatial_channels"],
+            *schema["grid_shape"],
+        ),
+        dtype=np.float32,
+    )
+    for variable in schema["variables"]:
+        name = variable["name"]
+        if name not in dataset:
+            raise ValueError(f"Initial state is missing trained variable {name!r}")
+        array = dataset[name]
+        interpolation = {}
+        if not np.array_equal(np.asarray(array.lat.values), requested_lat):
+            interpolation["lat"] = requested_lat
+        if not np.array_equal(np.asarray(array.lon.values), requested_lon):
+            interpolation["lon"] = requested_lon
+        if interpolation:
+            array = array.interp(interpolation)
+        values = np.asarray(
+            array.transpose("time", *variable["dims"]).values,
+            dtype=np.float32,
+        ).reshape(dataset.sizes["time"], -1, *schema["grid_shape"])
+        start, end = variable["channel_slice"]
+        if values.shape[1] != end - start:
+            raise ValueError(f"Variable {name!r} channels do not match training schema")
+        result[:, start:end] = np.nan_to_num(values)
+    return result
+
+
+def auxiliary_from_dataset(
+    dataset: xr.Dataset,
+    schema: dict[str, Any],
+    defaults: np.ndarray,
+) -> np.ndarray:
+    names = schema.get("auxiliary_feature_names", [])
+    result = np.broadcast_to(
+        np.asarray(defaults, dtype=np.float32), (dataset.sizes["time"], len(names))
+    ).copy()
+    for index, feature_name in enumerate(names):
+        source_name = feature_name.removeprefix("integrated:")
+        if source_name in dataset:
+            values = dataset[source_name]
+            if "time" in values.dims and values.ndim == 1:
+                result[:, index] = np.asarray(values.values, dtype=np.float32)
+    return result
+
+
+def reconstruct_spatial_dataset(
+    state: np.ndarray,
+    schema: dict[str, Any],
+    valid_time: pd.Timestamp,
+) -> xr.Dataset:
+    if schema.get("layout") != "spatial":
+        raise ValueError("reconstruct_spatial_dataset requires a spatial schema")
+    coords: dict[str, Any] = {
+        "time": [valid_time.to_datetime64()],
+        "lat": schema["coords"]["lat"],
+        "lon": schema["coords"]["lon"],
+    }
+    data_vars = {}
+    for variable in schema["variables"]:
+        start, end = variable["channel_slice"]
+        values = np.asarray(state[start:end]).reshape(variable["shape"])
+        for dim, coordinate in variable["coords"].items():
+            coords.setdefault(dim, coordinate)
+        data_vars[variable["name"]] = (
+            ("time", *variable["dims"]),
+            values[None],
+            variable.get("attrs", {}),
+        )
+    return xr.Dataset(data_vars=data_vars, coords=coords)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Combine gridded fields and main-system data into monthly states"
@@ -357,6 +640,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--variables", nargs="*")
     parser.add_argument("--target-lat-points", type=int, default=18)
     parser.add_argument("--target-lon-points", type=int, default=36)
+    parser.add_argument("--layout", choices=("vector", "spatial"), default="vector")
     parser.add_argument("--output", default="data/monthly_climate_states.npz")
     args = parser.parse_args(argv)
     archive, schema = prepare_monthly_archive(
@@ -366,6 +650,7 @@ def main(argv: list[str] | None = None) -> int:
         variables=None if not args.variables else tuple(args.variables),
         target_lat_points=args.target_lat_points,
         target_lon_points=args.target_lon_points,
+        layout=args.layout,
     )
     print(f"archive={archive}")
     print(f"schema={schema}")

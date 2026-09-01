@@ -3,12 +3,15 @@ import json
 import numpy as np
 import pandas as pd
 import xarray as xr
+import torch
 
+from climate_diffusion.config import FlowModelConfig
 from climate_diffusion.data import prepare_monthly_archive
 from climate_diffusion.evaluation import evaluate_flow_checkpoint
 from climate_diffusion.inference import LatentFlowForecaster
 from climate_diffusion.train import train_flow_model
 from climate_diffusion.weather_adapter import FlowMatchingWeatherRunner
+from climate_diffusion.model import MonthlyLatentFlow
 
 
 def test_one_epoch_checkpoint_runs_as_monthly_weather_replacement(tmp_path):
@@ -67,3 +70,29 @@ def test_one_epoch_checkpoint_runs_as_monthly_weather_replacement(tmp_path):
     metrics = json.loads(metrics_path.read_text())
     assert metrics["test_windows"] == manifest["split"]["test"]
     assert np.isfinite(metrics["normalized_overall"]["crps"])
+
+
+def test_v2_vector_checkpoint_remains_loadable(tmp_path):
+    config = FlowModelConfig(state_dim=4, history_months=2, latent_dim=2, hidden_dim=8)
+    model = MonthlyLatentFlow(config)
+    checkpoint = tmp_path / "legacy-v2.pt"
+    torch.save(
+        {
+            "format": "climate_diffusion.monthly_latent_flow.v2",
+            "model": model.state_dict(),
+            "model_config": {
+                "state_dim": 4,
+                "history_months": 2,
+                "latent_dim": 2,
+                "hidden_dim": 8,
+                "time_embedding_dim": 32,
+            },
+            "state_mean": torch.zeros(4),
+            "state_scale": torch.ones(4),
+            "schema": {"format": "climate_diffusion.monthly_state.v1"},
+        },
+        checkpoint,
+    )
+    forecaster = LatentFlowForecaster(checkpoint, device="cpu")
+    assert forecaster.config.backend == "vector_mlp"
+    assert all(not parameter.requires_grad for parameter in forecaster.model.parameters())

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "climate-diffusion"
-version = "0.1.0"
+version = "0.2.0"
 description = "Monthly latent conditional flow matching for integrated climate data"
 requires-python = ">=3.10"
 dependencies = [
