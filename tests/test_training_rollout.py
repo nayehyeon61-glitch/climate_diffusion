@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import torch
+import pytest
 
 from climate_diffusion.config import FlowModelConfig
 from climate_diffusion.data import prepare_monthly_archive
@@ -15,12 +16,12 @@ from climate_diffusion.model import MonthlyLatentFlow
 
 
 def test_one_epoch_checkpoint_runs_as_monthly_weather_replacement(tmp_path):
-    times = pd.date_range("2018-01-01", periods=10, freq="MS")
+    times = pd.date_range("2018-01-01", periods=18, freq="MS")
     fields = xr.Dataset(
         {
             "msl": (
                 ("time", "lat", "lon"),
-                np.linspace(990, 1020, 20, dtype=np.float32).reshape(10, 1, 2),
+                    np.linspace(990, 1020, 36, dtype=np.float32).reshape(18, 1, 2),
             )
         },
         coords={"time": times, "lat": [30.0], "lon": [120.0, 140.0]},
@@ -71,6 +72,20 @@ def test_one_epoch_checkpoint_runs_as_monthly_weather_replacement(tmp_path):
     assert metrics["test_windows"] == manifest["split"]["test"]
     assert np.isfinite(metrics["normalized_overall"]["crps"])
 
+    schema_path = archive.with_suffix(".schema.json")
+    schema = json.loads(schema_path.read_text())
+    schema["target_lon_points"] = 999
+    schema_path.write_text(json.dumps(schema))
+    with pytest.raises(ValueError, match="contract does not match checkpoint"):
+        evaluate_flow_checkpoint(
+            checkpoint,
+            archive,
+            tmp_path / "mismatched-evaluation.json",
+            ensemble_size=1,
+            integration_steps=1,
+            device="cpu",
+        )
+
 
 def test_v2_vector_checkpoint_remains_loadable(tmp_path):
     config = FlowModelConfig(state_dim=4, history_months=2, latent_dim=2, hidden_dim=8)
@@ -96,3 +111,60 @@ def test_v2_vector_checkpoint_remains_loadable(tmp_path):
     forecaster = LatentFlowForecaster(checkpoint, device="cpu")
     assert forecaster.config.backend == "vector_mlp"
     assert all(not parameter.requires_grad for parameter in forecaster.model.parameters())
+
+
+def test_clean_spatial_archive_trains_reloads_and_evaluates(tmp_path):
+    times = pd.date_range("2015-01-01", periods=18, freq="MS")
+    values = np.linspace(-1.0, 1.0, 18 * 4 * 8, dtype=np.float32).reshape(
+        18, 4, 8
+    )
+    fields = xr.Dataset(
+        {"msl": (("time", "lat", "lon"), values)},
+        coords={
+            "time": times,
+            "lat": np.linspace(-90.0, 90.0, 4),
+            "lon": np.arange(8) * 45.0,
+        },
+    )
+    source = tmp_path / "spatial.nc"
+    fields.to_netcdf(source, engine="scipy")
+    archive, _ = prepare_monthly_archive(
+        source,
+        tmp_path / "spatial-archive",
+        layout="spatial",
+        target_lat_points=4,
+        target_lon_points=8,
+    )
+    checkpoint = train_flow_model(
+        archive,
+        tmp_path / "spatial.pt",
+        history_months=3,
+        latent_dim=2,
+        hidden_dim=8,
+        epochs=1,
+        batch_size=2,
+        validation_fraction=0.25,
+        test_fraction=0.15,
+        model_backend="spatial_conv",
+        spatial_base_channels=2,
+        spatial_latent_channels=2,
+        spatial_downsample_levels=1,
+        operator_modes_lat=1,
+        operator_modes_lon=2,
+        patch_height=4,
+        patch_width=8,
+        tile_overlap=1,
+    )
+    forecaster = LatentFlowForecaster(checkpoint, device="cpu")
+    prediction = forecaster.forecast(values[-3:, None], integration_steps=1)
+    assert prediction.shape == (1, 1, 1, 4, 8)
+    assert np.isfinite(prediction).all()
+    metrics = evaluate_flow_checkpoint(
+        checkpoint,
+        archive,
+        tmp_path / "spatial-evaluation.json",
+        ensemble_size=1,
+        integration_steps=1,
+        device="cpu",
+    )
+    assert np.isfinite(json.loads(metrics.read_text())["normalized_overall"]["rmse"])

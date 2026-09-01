@@ -11,21 +11,31 @@ import numpy as np
 
 from .data import load_auxiliary_states, load_monthly_archive
 from .inference import LatentFlowForecaster
+from .validation import archive_contract_fingerprint, require_finite_numpy
 
 
 def _ensemble_crps(samples: np.ndarray, target: np.ndarray) -> float:
-    accuracy = np.abs(samples - target[None, :]).mean()
-    ordered = np.sort(samples, axis=0)
+    require_finite_numpy(samples, "evaluation ensemble samples")
+    valid = np.isfinite(target)
+    if not valid.any():
+        raise ValueError("Evaluation target contains no observed values")
+    selected_samples = samples[:, valid]
+    selected_target = target[valid]
+    accuracy = np.abs(selected_samples - selected_target[None, :]).mean()
+    ordered = np.sort(selected_samples, axis=0)
     members = samples.shape[0]
     coefficients = (2 * np.arange(members) - members + 1).reshape(
-        (members,) + (1,) * (samples.ndim - 1)
+        (members, 1)
     )
     half_pairwise = float((ordered * coefficients).sum(axis=0).mean() / (members**2))
     return float(accuracy - half_pairwise)
 
 
 def _error_metrics(prediction: np.ndarray, target: np.ndarray) -> dict[str, float]:
-    error = prediction - target
+    valid = np.isfinite(prediction) & np.isfinite(target)
+    if not valid.any():
+        raise ValueError("Metric has no jointly finite prediction/target values")
+    error = prediction[valid] - target[valid]
     return {
         "mae": float(np.abs(error).mean()),
         "rmse": float(np.sqrt(np.square(error).mean())),
@@ -51,6 +61,16 @@ def evaluate_flow_checkpoint(
     forecaster = LatentFlowForecaster(checkpoint_path, device=device)
     if int(schema["state_dim"]) != forecaster.config.state_dim:
         raise ValueError("Evaluation archive does not match checkpoint state dimension")
+    expected_fingerprint = forecaster.training_metadata.get(
+        "archive_contract_fingerprint"
+    )
+    actual_fingerprint = archive_contract_fingerprint(
+        schema, times, tuple(int(value) for value in states.shape)
+    )
+    if expected_fingerprint and expected_fingerprint != actual_fingerprint:
+        raise ValueError(
+            "Evaluation archive schema/grid/channel/time contract does not match checkpoint"
+        )
 
     training = forecaster.training_metadata
     split = training.get("split", {})
@@ -82,10 +102,13 @@ def evaluate_flow_checkpoint(
                 else np.asarray(auxiliary[start : start + history_months])
             ),
         )[:, 0, :]
+        require_finite_numpy(samples, f"evaluation forecast window={start}")
         target = states[target_index]
         ensemble_mean = samples.mean(axis=0)
         normalized_samples = (samples - mean[None, :]) / scale[None, :]
-        normalized_target = (target - mean) / scale
+        normalized_target = np.where(
+            np.isfinite(target), (target - mean) / scale, np.nan
+        )
         normalized_mean = normalized_samples.mean(axis=0)
         case_metrics = _error_metrics(normalized_mean, normalized_target)
         case_metrics.update(
@@ -103,7 +126,12 @@ def evaluate_flow_checkpoint(
     prediction_array = np.stack(predictions)
     target_array = np.stack(targets)
     normalized_prediction = (prediction_array - mean[None, :]) / scale[None, :]
-    normalized_target = (target_array - mean[None, :]) / scale[None, :]
+    normalized_target = np.where(
+        np.isfinite(target_array),
+        (target_array - mean[None, :]) / scale[None, :],
+        np.nan,
+    )
+    require_finite_numpy(normalized_prediction, "normalized evaluation prediction")
     overall = _error_metrics(normalized_prediction, normalized_target)
     overall["crps"] = float(np.mean([row["crps"] for row in case_rows]))
     overall["ensemble_spread"] = float(
@@ -147,11 +175,21 @@ def evaluate_flow_checkpoint(
         "normalized_overall": overall,
         "by_variable_raw_units": by_variable,
         "by_case_normalized": case_rows,
+        "archive_contract_fingerprint": actual_fingerprint,
     }
+    metric_values = list(overall.values())
+    for values in by_variable.values():
+        metric_values.extend(values.values())
+    for values in case_rows:
+        metric_values.extend(
+            value for key, value in values.items() if key not in {"window_index", "target_time"}
+        )
+    require_finite_numpy(np.asarray(metric_values, dtype=np.float64), "evaluation metrics")
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
-        json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
+        encoding="utf-8",
     )
     return output
 

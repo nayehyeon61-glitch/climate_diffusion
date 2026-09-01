@@ -16,6 +16,7 @@ from .spatial import (
     SpectralOperator2d,
     tiled_apply,
 )
+from .validation import require_finite_tensor
 
 
 class StateAutoencoder(nn.Module):
@@ -206,8 +207,13 @@ class MonthlyLatentFlow(nn.Module):
         target: torch.Tensor,
         config: FlowLossConfig | None = None,
         history_auxiliary: torch.Tensor | None = None,
+        target_mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         config = config or FlowLossConfig()
+        require_finite_tensor(history, "flow loss history input")
+        require_finite_tensor(target, "flow loss target input")
+        if history_auxiliary is not None:
+            require_finite_tensor(history_auxiliary, "flow loss auxiliary input")
         batch_size = target.shape[0]
         if self.is_spatial:
             if history.ndim != 5 or target.ndim != 4:
@@ -227,6 +233,9 @@ class MonthlyLatentFlow(nn.Module):
             target_latent = self.autoencoder.encode(target)
             reconstruction = self.autoencoder.decode(target_latent)
             time_shape = (batch_size, 1)
+        require_finite_tensor(history_latents, "encoded history latent")
+        require_finite_tensor(target_latent, "encoded target latent")
+        require_finite_tensor(reconstruction, "decoded target reconstruction")
         source_latent = torch.randn_like(target_latent)
         time = torch.rand(batch_size, device=target.device, dtype=target.dtype)
         interpolation_time = time.reshape(time_shape)
@@ -237,8 +246,18 @@ class MonthlyLatentFlow(nn.Module):
         else:
             condition = self.vector_field.encode_condition(history_latents)
         predicted_velocity = self.vector_field(interpolated, time, condition)
+        require_finite_tensor(condition, "flow history condition")
+        require_finite_tensor(predicted_velocity, "predicted flow velocity")
 
-        reconstruction_loss = F.mse_loss(reconstruction, target)
+        if target_mask is None:
+            reconstruction_loss = F.mse_loss(reconstruction, target)
+        else:
+            if target_mask.shape != target.shape:
+                raise ValueError("target_mask must have the same shape as target")
+            weights = target_mask.to(dtype=target.dtype)
+            if not bool(weights.sum() > 0):
+                raise ValueError("target_mask contains no observed values")
+            reconstruction_loss = ((reconstruction - target).square() * weights).sum() / weights.sum()
         flow_loss = F.mse_loss(predicted_velocity, target_velocity)
         latent_regularization = target_latent.square().mean()
         total = (
@@ -246,6 +265,10 @@ class MonthlyLatentFlow(nn.Module):
             + config.flow_weight * flow_loss
             + config.latent_regularization_weight * latent_regularization
         )
+        require_finite_tensor(reconstruction_loss, "reconstruction loss")
+        require_finite_tensor(flow_loss, "flow matching loss")
+        require_finite_tensor(latent_regularization, "latent regularization loss")
+        require_finite_tensor(total, "total flow loss")
         return {
             "loss": total,
             "reconstruction_mse": reconstruction_loss,
@@ -264,6 +287,9 @@ class MonthlyLatentFlow(nn.Module):
     ) -> torch.Tensor:
         if integration_steps < 1:
             raise ValueError("integration_steps must be positive")
+        require_finite_tensor(history, "flow sampling history")
+        if history_auxiliary is not None:
+            require_finite_tensor(history_auxiliary, "flow sampling auxiliary history")
         if self.is_spatial:
             batch, months, channels, height, width = history.shape
             encoded_history = self.autoencoder.encode(
@@ -298,9 +324,13 @@ class MonthlyLatentFlow(nn.Module):
             latent = latent + step * self.vector_field(
                 midpoint, midpoint_time, condition
             )
+            require_finite_tensor(latent, f"flow sampling latent step={index}")
         if self.is_spatial:
-            return self.autoencoder.decode(latent, history.shape[-2:])
-        return self.autoencoder.decode(latent)
+            output = self.autoencoder.decode(latent, history.shape[-2:])
+        else:
+            output = self.autoencoder.decode(latent)
+        require_finite_tensor(output, "flow sampling decoded output")
+        return output
 
     @torch.no_grad()
     def sample_tiled(

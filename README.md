@@ -142,8 +142,10 @@ flowchart LR
 +\lambda_z\|z_1\|_2^2.
 \]
 
-시간 순서대로 train/validation/test를 분리하며 경계 사이의 겹치는 window를
-`--purge-windows`만큼 제거합니다. 정규화 통계는 train 구간에서만 계산합니다.
+시간 순서대로 **raw calendar month를 먼저** train/validation/test로 분리하고 각
+구간 안에서만 window를 만듭니다. 따라서 기본 `history=6`, `lead=1`,
+`purge=1`에서도 서로 다른 split이 원시 월을 공유하지 않습니다. 정규화와 결측치
+보간 통계는 train raw-month 구간의 관측값만으로 계산합니다.
 최적 validation checkpoint와 함께 다음 artifact를 저장합니다.
 
 ```text
@@ -154,6 +156,25 @@ climate-flow-monthly-v1.manifest.json
 ```
 
 manifest에는 SHA-256, 변수 schema, seed와 고정 test window가 기록됩니다.
+또한 raw-month index/time 범위와 archive schema·grid·channel·time fingerprint를
+기록하여 다른 archive를 실수로 평가하는 것을 차단합니다.
+
+### 결측치와 시간축 안전 계약
+
+| 입력 상태 | 정책 |
+|---|---|
+| `+Inf` / `-Inf` | archive 생성·로딩 즉시 변수/월/위치/개수와 함께 실패 |
+| `NaN` | 관측 mask에 보존하고 split 이후 train-only 평균으로 보간 |
+| spatial `NaN` | channel train mean으로 보간되어 정규화 후 정확히 0 |
+| train 구간 전체 결측 feature/channel | 학습 시작 전 실패 |
+| 결측 calendar month | 해당 행을 다음 달로 간주하지 않고 archive 검증 실패 |
+| 중복 timestamp | archive 생성 전에 실패 |
+| 입력 순서 뒤섞임 | 중복 검사 후 timestamp 정렬, 이후 월 연속성 검사 |
+
+입력, 보간·정규화 tensor, auxiliary, latent, 각 loss, gradient, checkpoint 통계,
+rollout, evaluation metric에는 단계별 finite guard가 적용됩니다. AMP 학습에서는
+`GradScaler`로 unscale한 뒤 gradient finite 여부를 검사합니다. 평가 JSON은
+`allow_nan=False`로 기록됩니다.
 
 ### 0.25° 전지구 공간 backend
 
@@ -188,6 +209,7 @@ train-climate-flow \
   --mixed-precision \
   --gradient-accumulation-steps 8 \
   --gradient-checkpointing \
+  --min-observed-fraction 0.95 \
   --epochs 100 \
   --output download/flow-matching/monthly-spatial-025/climate-flow-spatial-025.pt
 ```
@@ -198,6 +220,22 @@ train-climate-flow \
 |---|---|---|
 | `spatial_conv` | periodic convolutional autoencoder + ConvGRU vector field | 빠른 공간 baseline |
 | `spatial_operator` | 위 구조 + latent Fourier operator | 장거리 공간 mode 학습 |
+
+실제 0.25° 장기 job 전에는 안전 회귀 테스트를 먼저 실행하십시오.
+
+```bash
+python -m pytest -q
+
+prepare-climate-monthly-data \
+  --fields data/era5_025_history.zarr \
+  --layout spatial \
+  --target-lat-points 721 --target-lon-points 1440 \
+  --output data/monthly_climate_spatial_025
+```
+
+두 번째 명령은 archive를 쓰는 동안에도 `Inf`, 완전 결측 월/channel, 중복·결측 월을
+검사하므로 실패하면 학습으로 진행하면 안 됩니다. 저장소에는 실제 ERA5 0.25°
+학습 weight 또는 실데이터 evaluation artifact가 포함되어 있지 않습니다.
 
 공통으로 경도에는 circular padding을, 위도에는 pole-safe replicate padding을
 적용합니다. 721처럼 downsampling 배수로 나누어지지 않는 위도 크기는 decoder가

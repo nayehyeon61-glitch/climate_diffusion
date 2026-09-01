@@ -13,6 +13,7 @@ import torch
 from .config import FlowModelConfig
 from .data import load_auxiliary_states, load_monthly_archive
 from .model import MonthlyLatentFlow
+from .validation import require_finite_numpy, require_finite_tensor, require_no_inf_numpy
 
 
 class LatentFlowForecaster:
@@ -37,6 +38,8 @@ class LatentFlowForecaster:
         self.config = FlowModelConfig(**payload["model_config"])
         self.model = MonthlyLatentFlow(self.config).to(self.device)
         self.model.load_state_dict(payload["model"])
+        for name, parameter in self.model.named_parameters():
+            require_finite_tensor(parameter, f"checkpoint parameter {name}")
         self.model.eval().requires_grad_(False)
         if any(parameter.requires_grad for parameter in self.model.parameters()):
             raise RuntimeError("Flow checkpoint could not be frozen")
@@ -44,6 +47,12 @@ class LatentFlowForecaster:
         self.state_scale = payload["state_scale"].to(self.device)
         self.auxiliary_mean = payload.get("auxiliary_mean", torch.empty(0)).to(self.device)
         self.auxiliary_scale = payload.get("auxiliary_scale", torch.empty(0)).to(self.device)
+        require_finite_tensor(self.state_mean, "checkpoint state_mean")
+        require_finite_tensor(self.state_scale, "checkpoint state_scale")
+        require_finite_tensor(self.auxiliary_mean, "checkpoint auxiliary_mean")
+        require_finite_tensor(self.auxiliary_scale, "checkpoint auxiliary_scale")
+        if bool((self.state_scale <= 0).any()) or bool((self.auxiliary_scale <= 0).any()):
+            raise ValueError("Checkpoint normalization scales must be positive")
         self.schema = payload["schema"]
         self.training_metadata = payload.get("training", {})
         self.checkpoint_format = str(payload["format"])
@@ -66,14 +75,21 @@ class LatentFlowForecaster:
         return digest
 
     def _normalise(self, values: np.ndarray) -> torch.Tensor:
+        require_no_inf_numpy(values, "forecast history")
         tensor = torch.as_tensor(
             np.array(values, dtype=np.float32, copy=True), device=self.device
         )
-        return (tensor - self.state_mean) / self.state_scale
+        tensor = torch.where(torch.isfinite(tensor), tensor, self.state_mean)
+        normalized = (tensor - self.state_mean) / self.state_scale
+        require_finite_tensor(normalized, "normalized forecast history")
+        return normalized
 
     def _denormalise(self, values: torch.Tensor) -> np.ndarray:
         result = values * self.state_scale + self.state_mean
-        return result.detach().cpu().numpy().astype(np.float32)
+        require_finite_tensor(result, "denormalized flow prediction")
+        output = result.detach().cpu().numpy().astype(np.float32)
+        require_finite_numpy(output, "flow forecast output")
+        return output
 
     @torch.inference_mode()
     def forecast(
@@ -121,9 +137,15 @@ class LatentFlowForecaster:
                     f"Expected auxiliary history shape {expected_auxiliary}, "
                     f"received {tuple(auxiliary.shape)}"
                 )
+            if bool(torch.isinf(auxiliary).any()):
+                raise ValueError("Forecast auxiliary history contains Inf")
+            auxiliary = torch.where(
+                torch.isfinite(auxiliary), auxiliary, self.auxiliary_mean
+            )
             normalized_auxiliary = (
                 auxiliary - self.auxiliary_mean
             ) / self.auxiliary_scale
+            require_finite_tensor(normalized_auxiliary, "normalized forecast auxiliary")
         if self.config.backend != "vector_mlp" and tile_size is None:
             stored = self.training_metadata.get("patch_size")
             tile_size = None if stored is None else tuple(int(value) for value in stored)
