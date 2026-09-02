@@ -174,7 +174,7 @@ def _load_integrated_monthly(
 
 
 def prepare_monthly_archive(
-    fields: str | Path,
+    fields: str | Path | xr.Dataset,
     output: str | Path,
     *,
     integrated: str | Path | None = None,
@@ -182,13 +182,16 @@ def prepare_monthly_archive(
     target_lat_points: int = 18,
     target_lon_points: int = 36,
     layout: str = "vector",
+    source_label: str | None = None,
+    source_metadata: dict[str, Any] | None = None,
 ) -> tuple[Path, Path]:
     """Aggregate fields and the main-system table into one monthly state archive."""
     if layout not in {"vector", "spatial"}:
         raise ValueError("layout must be 'vector' or 'spatial'")
     if min(target_lat_points, target_lon_points) < 1:
         raise ValueError("Target grid dimensions must be positive")
-    with _open_dataset(fields) as source:
+    opener = fields if isinstance(fields, xr.Dataset) else _open_dataset(fields)
+    with opener as source:
         dataset = _normalise_coordinates(source)
         if "time" not in dataset.coords:
             raise ValueError("Gridded climate fields require a time coordinate")
@@ -213,11 +216,12 @@ def prepare_monthly_archive(
             selected_names,
             months,
             output,
-            fields=fields,
+            fields=source_label or str(fields),
             integrated=integrated,
             aggregation=aggregation,
             target_lat_points=target_lat_points,
             target_lon_points=target_lon_points,
+            source_metadata=source_metadata,
         )
 
     blocks = []
@@ -278,7 +282,8 @@ def prepare_monthly_archive(
     schema = {
         "format": "climate_diffusion.monthly_state.v2",
         "layout": "vector",
-        "source_fields": str(fields),
+        "source_fields": source_label or str(fields),
+        "source_metadata": source_metadata,
         "source_integrated": None if integrated is None else str(integrated),
         "state_dim": int(states.shape[1]),
         "field_dim": int(field_dim),
@@ -309,6 +314,7 @@ def _write_spatial_archive(
     aggregation: str,
     target_lat_points: int,
     target_lon_points: int,
+    source_metadata: dict[str, Any] | None,
 ) -> tuple[Path, Path]:
     """Write a memory-mapped spatial archive without materialising every month."""
     if "lat" not in monthly.dims or "lon" not in monthly.dims:
@@ -405,6 +411,7 @@ def _write_spatial_archive(
         "layout": "spatial",
         "storage": "npy_memmap_directory",
         "source_fields": str(fields),
+        "source_metadata": source_metadata,
         "source_integrated": None if integrated is None else str(integrated),
         "state_dim": int(channel_offset * height * width),
         "spatial_channels": channel_offset,

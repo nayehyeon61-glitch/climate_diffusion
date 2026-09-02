@@ -94,6 +94,26 @@ data/
 IBTrACS 통합 표만으로는 전 지구 대기장을 복원할 수 없습니다. WeatherNext 대체
 runner를 만들려면 반드시 ERA5/HRES 같은 gridded field도 함께 학습해야 합니다.
 
+### 분할된 실제 ERA5 입력
+
+변수·pressure level 파일이 나뉜 ERA5 디렉터리는 전용 adapter로 기존 spatial
+archive에 연결합니다. adapter는 `valid_time/latitude/longitude/pressure_level`을
+기존 `time/lat/lon/level` 계약으로 정규화하고, 경도를 `[0, 360)`으로 정렬합니다.
+이후의 월 집계, 결측치 정책, train-only 정규화 및 grid fingerprint는 기존 구현을
+그대로 사용합니다.
+
+```bash
+prepare-era5-climate-flow \
+  --source data/era5/ \
+  --variables msl t2m u10 v10 z t q u v \
+  --target-lat-points 721 --target-lon-points 1440 \
+  --output data/monthly_climate_spatial_025
+```
+
+`--source`는 하나 이상의 NetCDF/Zarr 경로, glob 또는 디렉터리를 받습니다. HRES는
+이번 slice에 포함하지 않았으며, 후속 adapter가 동일한 archive 경계를 사용하도록
+ERA5 source 정규화를 별도 모듈에 격리했습니다.
+
 ## 3. 다음 1개월 Flow Matching 학습
 
 ```bash

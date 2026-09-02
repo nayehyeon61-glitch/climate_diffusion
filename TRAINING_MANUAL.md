@@ -10,6 +10,18 @@ ERA5/HRES 입력은 동일 시간축과 규칙적인 latitude/longitude 좌표�
 pressure-level 변수는 `(time, level, lat, lon)`, surface 변수는
 `(time, lat, lon)` 형태를 권장합니다.
 
+실제 ERA5가 변수별 NetCDF로 분리되어 있다면 먼저 아래 명령을 사용합니다.
+
+```bash
+prepare-era5-climate-flow \
+  --source data/era5/ \
+  --variables msl t2m u10 v10 z t q u v \
+  --target-lat-points 721 --target-lon-points 1440 \
+  --output data/monthly_climate_spatial_025
+```
+
+생성된 archive부터는 아래의 기존 학습·rollout·evaluation 명령이 동일합니다.
+
 ```bash
 prepare-climate-monthly-data \
   --fields data/era5_025_history.zarr \
