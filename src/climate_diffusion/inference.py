@@ -1,4 +1,4 @@
-"""Load and sample trained monthly latent flow checkpoints."""
+"""Load and sample trained latent Flow Matching checkpoints."""
 
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ class LatentFlowForecaster:
         if payload.get("format") not in {
             "climate_diffusion.monthly_latent_flow.v1",
             "climate_diffusion.monthly_latent_flow.v2",
+            "climate_diffusion.latent_flow.v3",
         }:
             raise ValueError("Unsupported climate flow checkpoint format")
         self.config = FlowModelConfig(**payload["model_config"])
@@ -44,6 +45,13 @@ class LatentFlowForecaster:
         self.schema = payload["schema"]
         self.training_metadata = payload.get("training", {})
         self.checkpoint_format = str(payload["format"])
+        self.forecast_step_hours = int(
+            self.training_metadata.get(
+                "forecast_step_hours", self.schema.get("forecast_step_hours", 30 * 24)
+            )
+        )
+        if self.forecast_step_hours <= 0:
+            raise ValueError("Flow checkpoint forecast_step_hours must be positive")
         self.checkpoint_sha256 = self._verify_manifest()
 
     def _verify_manifest(self) -> str:
@@ -60,6 +68,9 @@ class LatentFlowForecaster:
                 raise ValueError(
                     f"Checkpoint checksum mismatch for {self.checkpoint_path}"
                 )
+            manifest_step = manifest.get("forecast_step_hours")
+            if manifest_step is not None and int(manifest_step) != self.forecast_step_hours:
+                raise ValueError("Flow manifest/checkpoint forecast-step mismatch")
         return digest
 
     def _normalise(self, values: np.ndarray) -> torch.Tensor:
@@ -80,13 +91,13 @@ class LatentFlowForecaster:
         integration_steps: int = 32,
         seed: int = 0,
     ) -> np.ndarray:
-        """Return [ensemble, month, state] autoregressive samples."""
+        """Return [ensemble, forecast_step, state] autoregressive samples."""
         history = np.asarray(history_states, dtype=np.float32)
         expected = (self.config.history_months, self.config.state_dim)
         if history.shape != expected:
             raise ValueError(f"Expected history shape {expected}, received {history.shape}")
         if min(months, ensemble_size, integration_steps) < 1:
-            raise ValueError("months, ensemble_size and integration_steps must be positive")
+            raise ValueError("steps, ensemble_size and integration_steps must be positive")
 
         normalized = self._normalise(history)
         outputs = []
@@ -109,10 +120,10 @@ class LatentFlowForecaster:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Sample a monthly climate flow model")
+    parser = argparse.ArgumentParser(description="Sample a trained latent climate Flow model")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--archive", required=True, help="Archive providing latest history")
-    parser.add_argument("--months", type=int, default=1)
+    parser.add_argument("--months", type=int, default=1, help="Number of model forecast steps")
     parser.add_argument("--ensemble-size", type=int, default=1)
     parser.add_argument("--integration-steps", type=int, default=32)
     parser.add_argument("--seed", type=int, default=0)
@@ -136,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
         predictions=predictions,
         last_history_time=times[-1],
         checkpoint=str(forecaster.checkpoint_path),
+        forecast_step_hours=np.asarray(forecaster.forecast_step_hours, dtype=np.int64),
     )
     print(output)
     return 0
