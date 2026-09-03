@@ -61,8 +61,6 @@ def _canonicalise(dataset: xr.Dataset, source: Path) -> xr.Dataset:
     if times.hasnans or times.has_duplicates:
         raise ValueError(f"ERA5 input {source} has invalid or duplicate timestamps")
     if "expver" in dataset.dims:
-        # CDS can expose provisional/final streams as expver=1/5. Keep the first
-        # finite value at each point without leaking information across time.
         collapsed = {}
         for name, array in dataset.data_vars.items():
             if "expver" not in array.dims:
@@ -85,12 +83,37 @@ def _normalise_global_grid(dataset: xr.Dataset) -> xr.Dataset:
         raise ValueError("ERA5 latitude/longitude coordinates must be non-empty 1-D axes")
     if np.unique(lat).size != lat.size or np.unique(lon).size != lon.size:
         raise ValueError("ERA5 latitude/longitude coordinates must be unique")
-    # Canonical [0, 360) longitude makes split files and rollout inputs comparable.
     canonical_lon = np.mod(lon, 360.0)
     if np.unique(canonical_lon).size != canonical_lon.size:
         raise ValueError("ERA5 longitude aliases collapse to duplicate [0, 360) values")
     dataset = dataset.assign_coords(lon=canonical_lon).sortby("lon")
     return dataset.sortby("lat", ascending=False)
+
+
+def _select_pressure_levels(
+    dataset: xr.Dataset,
+    pressure_levels: tuple[int, ...] | None,
+) -> xr.Dataset:
+    """Keep only requested pressure levels while leaving surface fields untouched."""
+    if pressure_levels is None:
+        return dataset
+    if "level" not in dataset.coords:
+        raise ValueError(
+            "--pressure-levels was supplied but the ERA5 source has no pressure-level coordinate"
+        )
+    requested = np.asarray(pressure_levels, dtype=np.int64)
+    if requested.ndim != 1 or requested.size == 0 or np.any(requested <= 0):
+        raise ValueError("pressure_levels must be a non-empty sequence of positive hPa values")
+    if np.unique(requested).size != requested.size:
+        raise ValueError("pressure_levels contains duplicates")
+    available = np.asarray(dataset.level.values)
+    missing = [int(value) for value in requested if value not in available]
+    if missing:
+        raise ValueError(
+            f"ERA5 source is missing requested pressure levels {missing}; "
+            f"available examples={available[:16].tolist()}"
+        )
+    return dataset.sel(level=requested)
 
 
 @contextmanager
@@ -126,6 +149,7 @@ def prepare_era5_archive(
     *,
     integrated: str | Path | None = None,
     variables: tuple[str, ...] | None = None,
+    pressure_levels: tuple[int, ...] | None = None,
     target_lat_points: int = 721,
     target_lon_points: int = 1440,
 ) -> tuple[Path, Path]:
@@ -133,10 +157,12 @@ def prepare_era5_archive(
     from .data import prepare_monthly_archive
 
     with open_era5_dataset(source) as (dataset, files):
+        dataset = _select_pressure_levels(dataset, pressure_levels)
         metadata = {
-            "adapter": "era5.v1",
+            "adapter": "era5.v2",
             "files": [str(path) for path in files],
             "canonical_coordinates": {"latitude": "descending", "longitude": "[0,360)"},
+            "pressure_levels_hpa": None if pressure_levels is None else list(pressure_levels),
         }
         return prepare_monthly_archive(
             dataset,
@@ -158,6 +184,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source", required=True, nargs="+", help="Files, directory, or glob")
     parser.add_argument("--integrated", help="Optional integrated Parquet/CSV")
     parser.add_argument("--variables", nargs="*")
+    parser.add_argument(
+        "--pressure-levels",
+        nargs="+",
+        type=int,
+        help="Pressure levels in hPa, e.g. 1000 850 700 500 200",
+    )
     parser.add_argument("--target-lat-points", type=int, default=721)
     parser.add_argument("--target-lon-points", type=int, default=1440)
     parser.add_argument("--output", required=True)
@@ -167,6 +199,7 @@ def main(argv: list[str] | None = None) -> int:
         args.output,
         integrated=args.integrated,
         variables=None if not args.variables else tuple(args.variables),
+        pressure_levels=None if not args.pressure_levels else tuple(args.pressure_levels),
         target_lat_points=args.target_lat_points,
         target_lon_points=args.target_lon_points,
     )
