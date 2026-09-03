@@ -20,12 +20,7 @@ from .data import (
 
 
 def sample_fixed_step_history(dataset: xr.Dataset, step_hours: int) -> xr.Dataset:
-    """Select exact causal snapshots separated by ``step_hours`` ending at the latest state.
-
-    The latest available input time is always retained. Earlier history snapshots are
-    selected backwards from that timestamp, which makes the inference boundary causal
-    and guarantees that a one-step forecast is exactly ``step_hours`` after init time.
-    """
+    """Select exact causal snapshots separated by ``step_hours`` ending at the latest state."""
     if step_hours <= 0:
         raise ValueError("step_hours must be positive")
     dataset = _normalise_coordinates(dataset).sortby("time")
@@ -59,6 +54,11 @@ def _load_integrated_asof(
     if "time" not in frame:
         raise ValueError("Integrated main-system data requires a 'time' column")
     frame["time"] = pd.to_datetime(frame["time"])
+    if frame["time"].duplicated().any():
+        raise ValueError(
+            "Fixed-step Flow integrated input must contain at most one row per timestamp; "
+            "do not mix multiple storm rows into a global atmospheric state"
+        )
     numeric = [
         name for name in frame.select_dtypes(include=[np.number]).columns
         if name not in {"init_time_ns"}
@@ -68,11 +68,11 @@ def _load_integrated_asof(
     ordered = frame.sort_values("time")[["time", *numeric]]
     query = pd.DataFrame({"time": times})
     aligned = pd.merge_asof(query, ordered, on="time", direction="backward")
-    values = aligned[numeric].to_numpy(np.float32)
-    fill = np.nanmean(values, axis=0)
-    fill = np.where(np.isfinite(fill), fill, 0.0)
-    values = np.where(np.isfinite(values), values, fill[None, :])
-    return values.astype(np.float32), [f"integrated:{name}" for name in numeric]
+    # Never use future rows or a full-series mean for imputation. Forward filling
+    # after a backward as-of join is causal; leading unavailable values use zero.
+    values_frame = aligned[numeric].replace([np.inf, -np.inf], np.nan).ffill().fillna(0.0)
+    values = values_frame.to_numpy(np.float32)
+    return values, [f"integrated:{name}" for name in numeric]
 
 
 def prepare_fixed_step_archive(
@@ -87,9 +87,9 @@ def prepare_fixed_step_archive(
 ) -> tuple[Path, Path]:
     """Create an exact-snapshot archive whose one model step is ``step_hours``.
 
-    Unlike the legacy monthly archive this does not average a 15-day interval. Each
-    state is an atmospheric snapshot, so a 360h model learns a true day-15 endpoint
-    contract suitable for the downstream P15 anchor.
+    No temporal averaging is applied. Production 0--360h trajectory models should
+    use a sub-360 step (6h for WeatherNext cadence parity, or 24h for a lighter
+    experiment); a 360h step is supported as an endpoint-only ablation.
     """
     if step_hours <= 0:
         raise ValueError("step_hours must be positive")
@@ -153,9 +153,10 @@ def prepare_fixed_step_archive(
 
     states = np.concatenate(blocks, axis=1).astype(np.float32)
     observed_mask = np.isfinite(states)
-    feature_fill = np.nanmean(states, axis=0)
-    feature_fill = np.where(np.isfinite(feature_fill), feature_fill, 0.0)
-    states = np.where(observed_mask, states, feature_fill[None, :]).astype(np.float32)
+    # Keep training/inference missing-value semantics aligned and leakage-free:
+    # vectorize_dataset also maps non-finite physical values to zero. The mask is
+    # persisted so a future mask-aware Flow encoder can consume it explicitly.
+    states = np.where(observed_mask, states, 0.0).astype(np.float32)
 
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -178,6 +179,7 @@ def prepare_fixed_step_archive(
         "forecast_step_hours": int(step_hours),
         "state_time_semantics": "snapshot_valid_time",
         "aggregation": "exact_fixed_step_snapshot",
+        "missing_value_policy": "zero_with_observed_mask_no_future_statistics",
         "target_lat_points": target_lat_points,
         "target_lon_points": target_lon_points,
     }
@@ -197,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--step-hours", type=int, default=360)
     parser.add_argument("--target-lat-points", type=int, default=18)
     parser.add_argument("--target-lon-points", type=int, default=36)
-    parser.add_argument("--output", default="data/flow_states_360h.npz")
+    parser.add_argument("--output", default="data/flow_states_fixed_step.npz")
     args = parser.parse_args(argv)
     archive, schema = prepare_fixed_step_archive(
         args.fields,
