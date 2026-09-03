@@ -21,6 +21,7 @@ test = ["pytest>=7"]
 [project.scripts]
 prepare-climate-monthly-data = "climate_diffusion.data:main"
 prepare-era5-climate-flow = "climate_diffusion.era5:main"
+prepare-era5-streaming-flow = "climate_diffusion.era5_streaming:main"
 prepare-hres-climate-flow = "climate_diffusion.hres:main"
 train-climate-flow = "climate_diffusion.train:main"
 train-runpod-climate-flow = "climate_diffusion.runpod_train:main"
