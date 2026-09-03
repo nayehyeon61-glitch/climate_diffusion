@@ -11,8 +11,9 @@ import numpy as np
 import torch
 
 from .config import FlowModelConfig
-from .data import load_monthly_archive
+from .data import load_auxiliary_states, load_monthly_archive
 from .model import MonthlyLatentFlow
+from .validation import require_finite_numpy, require_finite_tensor, require_no_inf_numpy
 
 
 class LatentFlowForecaster:
@@ -31,16 +32,27 @@ class LatentFlowForecaster:
         if payload.get("format") not in {
             "climate_diffusion.monthly_latent_flow.v1",
             "climate_diffusion.monthly_latent_flow.v2",
+            "climate_diffusion.monthly_latent_flow.v3",
         }:
             raise ValueError("Unsupported climate flow checkpoint format")
         self.config = FlowModelConfig(**payload["model_config"])
         self.model = MonthlyLatentFlow(self.config).to(self.device)
         self.model.load_state_dict(payload["model"])
+        for name, parameter in self.model.named_parameters():
+            require_finite_tensor(parameter, f"checkpoint parameter {name}")
         self.model.eval().requires_grad_(False)
         if any(parameter.requires_grad for parameter in self.model.parameters()):
             raise RuntimeError("Flow checkpoint could not be frozen")
         self.state_mean = payload["state_mean"].to(self.device)
         self.state_scale = payload["state_scale"].to(self.device)
+        self.auxiliary_mean = payload.get("auxiliary_mean", torch.empty(0)).to(self.device)
+        self.auxiliary_scale = payload.get("auxiliary_scale", torch.empty(0)).to(self.device)
+        require_finite_tensor(self.state_mean, "checkpoint state_mean")
+        require_finite_tensor(self.state_scale, "checkpoint state_scale")
+        require_finite_tensor(self.auxiliary_mean, "checkpoint auxiliary_mean")
+        require_finite_tensor(self.auxiliary_scale, "checkpoint auxiliary_scale")
+        if bool((self.state_scale <= 0).any()) or bool((self.auxiliary_scale <= 0).any()):
+            raise ValueError("Checkpoint normalization scales must be positive")
         self.schema = payload["schema"]
         self.training_metadata = payload.get("training", {})
         self.checkpoint_format = str(payload["format"])
@@ -63,12 +75,21 @@ class LatentFlowForecaster:
         return digest
 
     def _normalise(self, values: np.ndarray) -> torch.Tensor:
-        tensor = torch.as_tensor(values, dtype=torch.float32, device=self.device)
-        return (tensor - self.state_mean) / self.state_scale
+        require_no_inf_numpy(values, "forecast history")
+        tensor = torch.as_tensor(
+            np.array(values, dtype=np.float32, copy=True), device=self.device
+        )
+        tensor = torch.where(torch.isfinite(tensor), tensor, self.state_mean)
+        normalized = (tensor - self.state_mean) / self.state_scale
+        require_finite_tensor(normalized, "normalized forecast history")
+        return normalized
 
     def _denormalise(self, values: torch.Tensor) -> np.ndarray:
         result = values * self.state_scale + self.state_mean
-        return result.detach().cpu().numpy().astype(np.float32)
+        require_finite_tensor(result, "denormalized flow prediction")
+        output = result.detach().cpu().numpy().astype(np.float32)
+        require_finite_numpy(output, "flow forecast output")
+        return output
 
     @torch.inference_mode()
     def forecast(
@@ -79,31 +100,98 @@ class LatentFlowForecaster:
         ensemble_size: int = 1,
         integration_steps: int = 32,
         seed: int = 0,
+        history_auxiliary: np.ndarray | None = None,
+        tile_size: tuple[int, int] | None = None,
+        tile_overlap: int | None = None,
     ) -> np.ndarray:
-        """Return [ensemble, month, state] autoregressive samples."""
+        """Return vector or spatial autoregressive ensemble samples."""
         history = np.asarray(history_states, dtype=np.float32)
-        expected = (self.config.history_months, self.config.state_dim)
+        if self.config.backend == "vector_mlp":
+            expected = (self.config.history_months, self.config.state_dim)
+        else:
+            expected = (
+                self.config.history_months,
+                self.config.spatial_channels,
+                self.config.grid_height,
+                self.config.grid_width,
+            )
         if history.shape != expected:
             raise ValueError(f"Expected history shape {expected}, received {history.shape}")
         if min(months, ensemble_size, integration_steps) < 1:
             raise ValueError("months, ensemble_size and integration_steps must be positive")
 
         normalized = self._normalise(history)
+        normalized_auxiliary = None
+        if self.config.auxiliary_dim:
+            if history_auxiliary is None:
+                history_auxiliary = np.broadcast_to(
+                    self.auxiliary_mean.detach().cpu().numpy(),
+                    (self.config.history_months, self.config.auxiliary_dim),
+                )
+            auxiliary = torch.as_tensor(
+                history_auxiliary, dtype=torch.float32, device=self.device
+            )
+            expected_auxiliary = (self.config.history_months, self.config.auxiliary_dim)
+            if auxiliary.shape != expected_auxiliary:
+                raise ValueError(
+                    f"Expected auxiliary history shape {expected_auxiliary}, "
+                    f"received {tuple(auxiliary.shape)}"
+                )
+            if bool(torch.isinf(auxiliary).any()):
+                raise ValueError("Forecast auxiliary history contains Inf")
+            auxiliary = torch.where(
+                torch.isfinite(auxiliary), auxiliary, self.auxiliary_mean
+            )
+            normalized_auxiliary = (
+                auxiliary - self.auxiliary_mean
+            ) / self.auxiliary_scale
+            require_finite_tensor(normalized_auxiliary, "normalized forecast auxiliary")
+        if self.config.backend != "vector_mlp" and tile_size is None:
+            stored = self.training_metadata.get("patch_size")
+            tile_size = None if stored is None else tuple(int(value) for value in stored)
+        if tile_overlap is None:
+            tile_overlap = int(self.training_metadata.get("tile_overlap", 0))
         outputs = []
         for member in range(ensemble_size):
             member_history = normalized.clone()
+            member_auxiliary = (
+                None if normalized_auxiliary is None else normalized_auxiliary.clone()
+            )
             generator = torch.Generator(device=self.device).manual_seed(seed + member)
             member_outputs = []
             for _ in range(months):
-                prediction = self.model.sample(
-                    member_history.unsqueeze(0),
-                    integration_steps=integration_steps,
-                    generator=generator,
-                )[0]
+                model_history = member_history.unsqueeze(0)
+                model_auxiliary = (
+                    None if member_auxiliary is None else member_auxiliary.unsqueeze(0)
+                )
+                if self.config.backend != "vector_mlp" and tile_size is not None and (
+                    tile_size[0] < self.config.grid_height
+                    or tile_size[1] < self.config.grid_width
+                ):
+                    prediction = self.model.sample_tiled(
+                        model_history,
+                        tile_size=tile_size,
+                        overlap=tile_overlap,
+                        integration_steps=integration_steps,
+                        generator=generator,
+                        history_auxiliary=model_auxiliary,
+                    )[0]
+                else:
+                    prediction = self.model.sample(
+                        model_history,
+                        integration_steps=integration_steps,
+                        generator=generator,
+                        history_auxiliary=model_auxiliary,
+                    )[0]
                 member_outputs.append(prediction)
                 member_history = torch.cat(
                     (member_history[1:], prediction.unsqueeze(0)), dim=0
                 )
+                if member_auxiliary is not None:
+                    # Future scalar conditions are unknown; persistence is explicit and neutral.
+                    member_auxiliary = torch.cat(
+                        (member_auxiliary[1:], member_auxiliary[-1:]), dim=0
+                    )
             outputs.append(torch.stack(member_outputs))
         return self._denormalise(torch.stack(outputs))
 
@@ -119,15 +207,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", default="outputs/climate-flow-forecast.npz")
     args = parser.parse_args(argv)
 
-    states, times, _ = load_monthly_archive(args.archive)
+    states, times, schema = load_monthly_archive(args.archive)
     forecaster = LatentFlowForecaster(args.checkpoint)
     history = states[-forecaster.config.history_months :]
+    auxiliary = load_auxiliary_states(args.archive, schema)
+    auxiliary_history = (
+        None
+        if auxiliary is None
+        else np.asarray(auxiliary[-forecaster.config.history_months :])
+    )
     predictions = forecaster.forecast(
         history,
         months=args.months,
         ensemble_size=args.ensemble_size,
         integration_steps=args.integration_steps,
         seed=args.seed,
+        history_auxiliary=auxiliary_history,
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "climate-diffusion"
-version = "0.1.0"
+version = "0.2.0"
 description = "Monthly latent conditional flow matching for integrated climate data"
 requires-python = ">=3.10"
 dependencies = [
@@ -20,6 +20,8 @@ test = ["pytest>=7"]
 
 [project.scripts]
 prepare-climate-monthly-data = "climate_diffusion.data:main"
+prepare-era5-climate-flow = "climate_diffusion.era5:main"
+prepare-hres-climate-flow = "climate_diffusion.hres:main"
 train-climate-flow = "climate_diffusion.train:main"
 forecast-climate-flow = "climate_diffusion.inference:main"
 evaluate-climate-flow = "climate_diffusion.evaluation:main"
