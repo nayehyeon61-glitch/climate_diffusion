@@ -1,4 +1,4 @@
-"""Train a monthly conditional flow matcher in an autoencoded latent space."""
+"""Train a conditional latent flow matcher over ordered state snapshots."""
 
 from __future__ import annotations
 
@@ -96,7 +96,7 @@ def _epoch(
                 totals[name] = totals.get(name, 0.0) + float(value.detach().cpu())
             batches += 1
     if batches == 0:
-        raise ValueError("Monthly split produced no training/validation batches")
+        raise ValueError("Flow split produced no training/validation batches")
     return {name: value / batches for name, value in totals.items()}
 
 
@@ -119,6 +119,16 @@ def train_flow_model(
     torch.manual_seed(seed)
     np.random.seed(seed)
     states, times, schema = load_monthly_archive(archive_path)
+    forecast_step_hours = int(schema.get("forecast_step_hours", 30 * 24))
+    if forecast_step_hours <= 0:
+        raise ValueError("Archive forecast_step_hours must be positive")
+    if len(times) > 1 and "forecast_step_hours" in schema:
+        actual = np.diff(times).astype("timedelta64[h]").astype(np.int64)
+        if not np.all(actual == forecast_step_hours):
+            raise ValueError(
+                f"Archive timestamps violate {forecast_step_hours}h forecast-step contract"
+            )
+
     sample_count = len(states) - history_months - lead_months + 1
     split = build_purged_temporal_split(
         sample_count,
@@ -135,16 +145,10 @@ def train_flow_model(
     normalized = ((states - state_mean) / state_scale).astype(np.float32)
 
     train_dataset = MonthlyWindowDataset(
-        normalized,
-        history_months,
-        lead_months,
-        indices=split.train,
+        normalized, history_months, lead_months, indices=split.train
     )
     validation_dataset = MonthlyWindowDataset(
-        normalized,
-        history_months,
-        lead_months,
-        indices=split.validation,
+        normalized, history_months, lead_months, indices=split.validation
     )
     generator = torch.Generator().manual_seed(seed)
     train_loader = DataLoader(
@@ -163,22 +167,17 @@ def train_flow_model(
     loss_config = FlowLossConfig()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MonthlyLatentFlow(model_config).to(device)
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=learning_rate, weight_decay=1e-4
-    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     best_validation = float("inf")
     history = []
+    checkpoint_format = "climate_diffusion.latent_flow.v3"
     for epoch in range(1, epochs + 1):
         train_metrics = _epoch(model, train_loader, loss_config, device, optimizer)
-        validation_metrics = _epoch(
-            model, validation_loader, loss_config, device, optimizer=None
-        )
-        history.append(
-            {"epoch": epoch, "train": train_metrics, "validation": validation_metrics}
-        )
+        validation_metrics = _epoch(model, validation_loader, loss_config, device, optimizer=None)
+        history.append({"epoch": epoch, "train": train_metrics, "validation": validation_metrics})
         print(
             f"epoch={epoch:04d} train={train_metrics['loss']:.6f} "
             f"validation={validation_metrics['loss']:.6f}"
@@ -187,7 +186,7 @@ def train_flow_model(
             best_validation = validation_metrics["loss"]
             torch.save(
                 {
-                    "format": "climate_diffusion.monthly_latent_flow.v2",
+                    "format": checkpoint_format,
                     "model": model.state_dict(),
                     "model_config": asdict(model_config),
                     "loss_config": asdict(loss_config),
@@ -195,7 +194,9 @@ def train_flow_model(
                     "state_scale": torch.from_numpy(state_scale),
                     "schema": schema,
                     "training": {
+                        "lead_steps": lead_months,
                         "lead_months": lead_months,
+                        "forecast_step_hours": forecast_step_hours,
                         "seed": seed,
                         "archive": str(archive_path),
                         "first_time": str(times[0]),
@@ -211,54 +212,59 @@ def train_flow_model(
         json.dumps(history, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
     checkpoint_sha256 = _sha256(output)
+    checkpoint_kind = (
+        "fixed_step_latent_flow_matching"
+        if "forecast_step_hours" in schema
+        else "monthly_latent_flow_matching"
+    )
     output.with_suffix(".metadata.json").write_text(
         json.dumps(
             {
-                "checkpoint_kind": "monthly_latent_flow_matching",
-                "checkpoint_format": "climate_diffusion.monthly_latent_flow.v2",
+                "checkpoint_kind": checkpoint_kind,
+                "checkpoint_format": checkpoint_format,
                 "checkpoint_sha256": checkpoint_sha256,
-                "forecast_step": "720 hours over monthly aggregate targets",
-                "history_months": history_months,
+                "forecast_step_hours": forecast_step_hours,
+                "history_steps": history_months,
                 "state_dim": states.shape[1],
                 "weather_next_compatible_runner": True,
                 "inference_ready": True,
                 "frozen_inference_required": True,
+                "schema_format": schema.get("format"),
                 "split": asdict(split),
             },
             indent=2,
             ensure_ascii=False,
-        )
-        + "\n",
+        ) + "\n",
         encoding="utf-8",
     )
     output.with_suffix(".manifest.json").write_text(
         json.dumps(
             {
-                "format": "climate_diffusion.artifact.v1",
+                "format": "climate_diffusion.artifact.v2",
                 "checkpoint": output.name,
                 "checkpoint_sha256": checkpoint_sha256,
                 "metrics": output.with_suffix(".metrics.json").name,
                 "metadata": output.with_suffix(".metadata.json").name,
                 "archive": str(Path(archive_path)),
                 "schema_format": schema.get("format"),
+                "forecast_step_hours": forecast_step_hours,
                 "variables": [item["name"] for item in schema["variables"]],
                 "split": asdict(split),
                 "seed": seed,
             },
             indent=2,
             ensure_ascii=False,
-        )
-        + "\n",
+        ) + "\n",
         encoding="utf-8",
     )
     return output
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Train monthly latent flow matching")
+    parser = argparse.ArgumentParser(description="Train latent Flow Matching over ordered state snapshots")
     parser.add_argument("--archive", required=True)
-    parser.add_argument("--history-months", type=int, default=6)
-    parser.add_argument("--lead-months", type=int, default=1)
+    parser.add_argument("--history-months", type=int, default=6, help="Number of prior archive states used as history")
+    parser.add_argument("--lead-months", type=int, default=1, help="Number of archive steps to the training target")
     parser.add_argument("--latent-dim", type=int, default=64)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--epochs", type=int, default=100)
@@ -270,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
         "--output",
-        default="download/flow-matching/monthly-v1/climate-flow-monthly-v1.pt",
+        default="download/flow-matching/flow-v3/climate-flow-v3.pt",
     )
     args = parser.parse_args(argv)
     path = train_flow_model(
