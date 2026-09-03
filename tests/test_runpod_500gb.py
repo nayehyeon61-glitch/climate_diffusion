@@ -118,7 +118,8 @@ def test_month_shards_finalize_to_standard_memmap_archive(tmp_path):
     assert states.shape == (2, 6, 2, 4)
     assert np.allclose(states[0], 1.0)
     assert np.allclose(states[1], 2.0)
-    assert times.tolist() == [np.datetime64("2020-02-01", "ns"), np.datetime64("2020-03-01", "ns")]
+    expected_times = np.asarray(["2020-02-01", "2020-03-01"], dtype="datetime64[ns]")
+    np.testing.assert_array_equal(np.asarray(times, dtype="datetime64[ns]"), expected_times)
     assert schema["source_metadata"]["pressure_levels_hpa"] == [1000, 850, 700, 500, 200]
 
 
