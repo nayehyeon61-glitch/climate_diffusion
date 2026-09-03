@@ -111,8 +111,19 @@ prepare-era5-climate-flow \
 ```
 
 `--source`는 하나 이상의 NetCDF/Zarr 경로, glob 또는 디렉터리를 받습니다. HRES는
-이번 slice에 포함하지 않았으며, 후속 adapter가 동일한 archive 경계를 사용하도록
-ERA5 source 정규화를 별도 모듈에 격리했습니다.
+forecast init/step을 먼저 하나의 valid-time 계열로 바꾼 뒤 같은 archive 경계를
+사용합니다. 분석장에는 기본 `--lead-hours 0`, 특정 forecast lead에는 값을 명시합니다.
+
+```bash
+prepare-hres-climate-flow \
+  --source data/hres/ --lead-hours 0 \
+  --variables msl t2m u10 v10 z t q u v \
+  --target-lat-points 721 --target-lon-points 1440 \
+  --output data/monthly_hres_spatial_025
+```
+
+HRES가 0.1°이면 선형 보간으로 정확한 `721×1440` 전지구 grid를 만들며, 선택한
+lead와 regridding provenance가 schema fingerprint에 포함됩니다.
 
 ## 3. 다음 1개월 Flow Matching 학습
 

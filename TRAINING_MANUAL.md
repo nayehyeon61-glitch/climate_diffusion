@@ -22,6 +22,17 @@ prepare-era5-climate-flow \
 
 생성된 archive부터는 아래의 기존 학습·rollout·evaluation 명령이 동일합니다.
 
+HRES 분석장 또는 forecast archive는 init/step을 하나의 valid-time 축으로 선택한 뒤
+동일한 spatial archive로 만듭니다. 서로 다른 lead를 한 archive에 혼합하지 않습니다.
+
+```bash
+prepare-hres-climate-flow \
+  --source data/hres/ --lead-hours 0 \
+  --variables msl t2m u10 v10 z t q u v \
+  --target-lat-points 721 --target-lon-points 1440 \
+  --output data/monthly_hres_spatial_025
+```
+
 ```bash
 prepare-climate-monthly-data \
   --fields data/era5_025_history.zarr \
