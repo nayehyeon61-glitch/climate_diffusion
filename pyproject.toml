@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 io = ["dask[array]>=2023.1", "netCDF4>=1.6", "pyarrow>=12", "zarr>=2.16"]
-test = ["pytest>=7"]
+test = ["pytest>=7", "scipy>=1.10"]
 
 [project.scripts]
 prepare-climate-monthly-data = "climate_diffusion.data:main"
