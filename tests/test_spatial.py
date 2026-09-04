@@ -2,17 +2,17 @@ import json
 
 import numpy as np
 import pandas as pd
+import pytest
 import torch
 import xarray as xr
 
-from climate_diffusion.config import FlowModelConfig
+from climate_diffusion.config import FlowLossConfig, FlowModelConfig
 from climate_diffusion.data import (
     load_monthly_archive,
     prepare_monthly_archive,
     reconstruct_spatial_dataset,
     spatialize_dataset,
 )
-from climate_diffusion.config import FlowLossConfig
 from climate_diffusion.model import MonthlyLatentFlow
 from climate_diffusion.spatial import (
     PeriodicConv2d,
@@ -159,11 +159,85 @@ def test_tiled_overlap_stitching_preserves_identity_and_dateline():
     history = torch.randn(1, 3, 2, 9, 13)
     output = tiled_apply(
         history,
-        lambda patch: patch[:, -1],
+        lambda patch, lat_start, lon_start: patch[:, -1],
         tile_size=(6, 7),
         overlap=3,
     )
     torch.testing.assert_close(output, history[:, -1])
+
+
+def test_tiled_apply_reports_each_tile_origin():
+    history = torch.randn(1, 2, 1, 9, 12)
+    seen = []
+
+    def predict(patch, lat_start, lon_start):
+        seen.append((lat_start, lon_start, tuple(patch.shape[-2:])))
+        return patch[:, -1]
+
+    tiled_apply(history, predict, tile_size=(6, 6), overlap=2)
+    assert seen == [
+        (0, 0, (6, 6)),
+        (0, 4, (6, 6)),
+        (0, 8, (6, 6)),
+        (3, 0, (6, 6)),
+        (3, 4, (6, 6)),
+        (3, 8, (6, 6)),
+    ]
+
+
+def test_overlapping_tiles_share_one_global_noise_field():
+    """Tiles must integrate the same draw where they overlap, not average two."""
+    config = spatial_config(height=8, width=16)
+    model = MonthlyLatentFlow(config).eval()
+    history = torch.randn(1, 3, 2, 8, 16)
+
+    captured = []
+    original = model.sample
+
+    def record(patch, **kwargs):
+        captured.append(kwargs["noise"])
+        return original(patch, **kwargs)
+
+    model.sample = record
+    model.sample_tiled(
+        history,
+        tile_size=(8, 8),
+        overlap=4,
+        integration_steps=1,
+        generator=torch.Generator().manual_seed(0),
+    )
+    model.sample = original
+
+    # Tiles start at longitude 0, 4, 8, 12 with a latent factor of 2, so tile 0
+    # and tile 1 share their trailing/leading latent columns.
+    assert len(captured) == 4
+    torch.testing.assert_close(captured[0][..., 2:], captured[1][..., :2])
+    torch.testing.assert_close(captured[1][..., 2:], captured[2][..., :2])
+
+
+def test_tiled_sampling_is_reproducible_and_seed_dependent():
+    config = spatial_config(height=8, width=16)
+    model = MonthlyLatentFlow(config).eval()
+    history = torch.randn(1, 3, 2, 8, 16)
+
+    def run(seed):
+        return model.sample_tiled(
+            history,
+            tile_size=(8, 8),
+            overlap=4,
+            integration_steps=2,
+            generator=torch.Generator().manual_seed(seed),
+        )
+
+    torch.testing.assert_close(run(0), run(0))
+    assert not torch.allclose(run(0), run(1))
+
+
+def test_sample_rejects_noise_that_does_not_match_the_latent_grid():
+    model = MonthlyLatentFlow(spatial_config(height=8, width=16)).eval()
+    history = torch.randn(1, 3, 2, 8, 16)
+    with pytest.raises(ValueError, match="Expected noise shape"):
+        model.sample(history, integration_steps=1, noise=torch.randn(1, 4, 3, 3))
 
 
 def test_spatial_archive_preserves_channels_coordinates_and_roundtrip(tmp_path):

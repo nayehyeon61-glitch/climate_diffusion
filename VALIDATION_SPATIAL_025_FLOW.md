@@ -31,9 +31,10 @@ train/validation/test 분리 모두 재현 검증에서 통과했다.
 | P0-2 patch 경도 가짜 seam | ✅ 수정 | 전 폭 입력만 wrap, 좁은 patch는 replicate(NEAR) |
 | P0-3 validation loss 재샘플링 | ✅ 수정 | 6회 반복 편차 5.5% → **0.0** (bit-identical) |
 | P1-4 flow 항 detach 없음 | ✅ 수정 | `d(flow loss)/d(target input)` = **0.0** |
-| P1-5/6/7, P2-8/9/10 | 미수정 | 아래 4절 참고 |
+| P1-7 tile마다 독립 noise | ✅ 수정 | seam에서 눌리던 spread가 전역 샘플링과 일치 (0.99배) |
+| P1-5, P1-6, P2-8, P2-9 | 미수정 | 아래 4절 참고 |
 
-테스트는 39 passed (수정 전 33 passed).
+테스트는 43 passed (수정 전 33 passed).
 
 ## 2. 통과한 항목 (재현 검증됨)
 
@@ -246,8 +247,32 @@ def predict(patch):
 `evaluation.py`는 체크포인트의 `patch_size`를 그대로 tile 크기로 쓰므로(`inference.py:149-153`),
 0.25° 운영 설정에서는 **평가가 항상 이 경로를 탄다**.
 
-**수정 방향**: 전역 latent noise를 한 번 뽑아두고 각 tile이 그 slice를 쓰도록 `sample()`에
-`noise` 인자를 추가한다.
+**✅ 수정 완료**: `sample()`에 `noise` 인자를 추가하고, `sample_tiled`가 전역 latent 해상도로
+noise를 **한 번만** 뽑은 뒤 각 tile이 자기 위치의 slice를 쓰게 했다. 이를 위해 `tiled_apply`가
+`predict(patch, lat_start, lon_start)`로 tile 원점을 넘긴다. 겹치는 tile은 겹친 영역에서
+같은 noise를 적분하므로 blending이 독립 draw를 평균내지 않는다.
+
+latent 좌표 변환은 downsample factor `2**levels`로 나눈 값을 쓴다. 경도는 modulo로 감고,
+위도는 감을 수 없으므로 `min(lat_start // factor, latent_height - rows)`로 slice를 안쪽에 붙인다.
+운영 형상(721×1440, patch 256, overlap 64, levels 3)에서 마지막 위도 tile 시작점 465는
+8의 배수가 아니라 latent 격자에 정확히 맞지 않는다. noise는 i.i.d.라 1픽셀 어긋남 자체는
+무해하고, 중요한 성질(겹친 영역이 같은 noise를 본다)은 latent 해상도에서 그대로 성립한다.
+
+재측정 (동일 모델, 48 멤버, 열별 spread):
+
+| | 평균 spread | 최소 열 | max/min |
+| --- | --- | --- | --- |
+| 수정 전 (tile마다 독립) | 0.11927 | 0.08477 | 1.730 |
+| **수정 후 (전역 공유)** | **0.12751** | **0.11125** | **1.312** |
+| 전역 샘플링 기준값 | 0.12904 | 0.11218 | 1.611 |
+
+수정 전에는 seam 부근 열의 spread가 기준값의 76%까지 눌렸고, 수정 후에는 전역 샘플링과
+사실상 같아진다(99%).
+
+회귀 테스트: `test_overlapping_tiles_share_one_global_noise_field`,
+`test_tiled_sampling_is_reproducible_and_seed_dependent`,
+`test_tiled_apply_reports_each_tile_origin`,
+`test_sample_rejects_noise_that_does_not_match_the_latent_grid`.
 
 ### P2-8. patch에 위치 정보가 없다
 
@@ -300,22 +325,26 @@ PR #1은 `main`과도 conflict(`mergeable_state: dirty`) 상태다. `main`이 `3
 
 ## 4. 남은 작업
 
-P0-1 / P0-2 / P0-3 / P1-4 / P2-10은 이 브랜치에서 수정했다. 남은 것은 순서대로:
+P0-1 / P0-2 / P0-3 / P1-4 / P1-7 / P2-10은 이 브랜치에서 수정했다. 남은 것은 순서대로:
 
 1. **P1-5** 학습 중 샘플링 기반 skill 지표 — 이게 있어야 `best.pt` 선택이 예보 성능과 연결된다.
    P0-3 수정은 비교를 재현 가능하게 만들었을 뿐, 무엇을 비교하는지는 바꾸지 않았다.
 2. **P1-6** 위도 가중 RMSE/ACC + 월별 climatology baseline — 현재 숫자는 전역 예보 성능을
    대표하지 않는다.
-3. **P1-7** tiled 샘플링의 전역 noise 공유.
-4. **P2-8** 위도/경도 정적 채널. P0-2를 "경도 전 폭 유지" 방식으로 다시 풀면 함께 줄어든다.
-5. **P2-9** `observed_fraction.npy` 활용 + 로드 시 전량 Inf 스캔 제거 (재시작마다 ~137 GiB).
+3. **P2-8** 위도/경도 정적 채널. P0-2를 "경도 전 폭 유지" 방식으로 다시 풀면 함께 줄어든다.
+4. **P2-9** `observed_fraction.npy` 활용 + 로드 시 전량 Inf 스캔 제거 (재시작마다 ~137 GiB).
 
 ## 5. 재현 방법
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e '.[test,io]'
-.venv/bin/python -m pytest -q          # 39 passed
+.venv/bin/python -m pytest -q          # 43 passed
 ```
+
+tiled 경로는 운영 형상(721×1440, patch 256, overlap 64, levels 3 → 32 tiles)에서도
+직접 확인했다. `_latent_extent`가 실제 encoder 출력과 일치하는지는 downsample level 1~4 ×
+크기 1~1440 조합으로 대조했고 불일치는 없었다. 어긋나면 `sample()`이
+`Expected noise shape ...`로 즉시 실패하므로 조용히 잘못될 여지는 없다.
 
 P0-3, P0-2, P1-4의 수치는 합성 4×8 격자 아카이브로 `train_flow_model` →
 `LatentFlowForecaster` → `evaluate_flow_checkpoint`를 돌려 얻었다. 절차는 본문 각 항목에
