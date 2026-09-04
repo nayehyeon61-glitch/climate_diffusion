@@ -21,6 +21,20 @@ train/validation/test 분리 모두 재현 검증에서 통과했다.
 추가로 **RunPod 기본 설정(`mixed_precision=True`)에서는 장시간 학습이 죽을 수 있는 경로가 있다.**
 아래 P0-1이 가장 먼저 고쳐야 할 항목이다.
 
+### 1.1 수정 상태
+
+이 브랜치에서 아래 네 건은 수정 완료했고, 각 항목에 재측정 결과를 붙였다.
+
+| 항목 | 상태 | 재측정 |
+| --- | --- | --- |
+| P0-1 AMP overflow가 run을 죽임 | ✅ 수정 | overflow step을 skip·집계, run 유지. fp32 경로는 hard fail 유지 |
+| P0-2 patch 경도 가짜 seam | ✅ 수정 | 전 폭 입력만 wrap, 좁은 patch는 replicate(NEAR) |
+| P0-3 validation loss 재샘플링 | ✅ 수정 | 6회 반복 편차 5.5% → **0.0** (bit-identical) |
+| P1-4 flow 항 detach 없음 | ✅ 수정 | `d(flow loss)/d(target input)` = **0.0** |
+| P1-5/6/7, P2-8/9/10 | 미수정 | 아래 4절 참고 |
+
+테스트는 39 passed (수정 전 33 passed).
+
 ## 2. 통과한 항목 (재현 검증됨)
 
 | 항목 | 결과 |
@@ -57,9 +71,13 @@ for name, parameter in model.named_parameters():
 
 `runpod_train.py`는 `mixed_precision=True`가 기본값이므로 500GB 장시간 run에 그대로 노출된다.
 
-**수정 방향**: AMP가 켜져 있을 때는 이 검사를 건너뛰고 `scaler.step()`의 skip 메커니즘에 맡기거나,
-`scaler.step()` 이후 `optimizer` state의 `found_inf`를 보고 "skip 횟수"를 metric으로 기록만 한다.
-fp32 경로에서만 hard fail을 유지하는 것이 안전하다.
+**✅ 수정 완료**: AMP가 켜져 있으면 overflow를 감지해 clip/step을 건너뛰고 `scaler`가 scale을
+낮추도록 맡긴다. 횟수는 `amp_overflow_steps`로 epoch metric에 남아 사라지지 않는다.
+loss scaling이 없는 fp32 경로에서는 non-finite gradient가 여전히 실제 결함이므로 hard fail을 유지한다.
+
+회귀 테스트 2건: `test_amp_gradient_overflow_skips_the_step_instead_of_ending_the_run`
+(overflow 1회 집계, 파라미터 불변, scale 감소 확인),
+`test_non_finite_gradient_without_loss_scaling_still_stops_the_run`.
 
 ### P0-2. patch 학습 / tiled 추론에서 경도 padding이 가짜 seam을 만든다
 
@@ -85,9 +103,23 @@ patch right-edge error vs global   : 0.833084
 전역 격자로만 검증하고, `test_clean_spatial_archive_trains_reloads_and_evaluates`는
 `patch_width=8`(= 전체 격자 폭)로 실행한다.
 
-**수정 방향**: patch 폭이 `grid_width`보다 작으면 경도 padding을 `replicate`로 전환하거나,
-경도는 항상 전체 폭(1440)을 유지하고 위도만 자르는 patch 전략으로 바꾼다.
-후자는 seam 문제와 P2-8(위치 정보 부재)을 동시에 줄인다.
+**✅ 수정 완료**: `PeriodicConv2d`에 `wrap_longitude` 플래그를 두고,
+`MonthlyLatentFlow`가 loss/sample 진입 시 입력 폭이 `config.grid_width`와 같을 때만 wrap을 켠다.
+좁은 patch와 tile은 경도도 **replicate(NEAR)** 로 패딩하므로 가짜 seam이 사라진다.
+downsample 이후 폭이 절반이 되어도 플래그는 최상위에서 한 번 결정되므로 깊은 층까지 일관된다.
+
+재측정: 전 폭(32/32) 입력 → wrap `True`, 좁은 patch(8/32) → wrap `False`.
+회귀 테스트: `test_sub_global_patch_pads_by_replication_instead_of_wrapping`,
+`test_model_wraps_longitude_only_for_globe_spanning_input`.
+
+**이 수정이 덮지 않는 것**: `spatial_operator` backend의 `SpectralOperator2d`는 patch에
+`rfft2`를 걸므로 여전히 patch를 주기 신호로 간주한다. conv padding과 같은 종류의 가정이지만
+FNO 계열에서는 patch를 그 자체로 하나의 도메인으로 보는 관행이라 별도 설계 판단이 필요하다.
+`spatial_conv` backend는 이 경로를 타지 않는다.
+
+남은 선택지: 경도를 항상 전체 폭으로 유지하고 위도만 자르는 patch 전략으로 가면
+seam이 원천 제거되고 P2-8(위치 정보 부재)도 함께 줄며 위 spectral 문제도 사라지지만,
+patch 메모리가 커진다.
 
 ### P0-3. 체크포인트 선택 지표가 확률적이다
 
@@ -107,9 +139,24 @@ reconstruction_mse: 10.319 (6회 모두 동일 — 결정론적)
 **모델 선택이 사실상 autoencoder 재구성 성능만 보고 이뤄진다.** flow matching 품질은
 선택에 거의 반영되지 않는다.
 
-**수정 방향**: validation 경로에서 `(t, x_0)`를 고정한다. epoch마다 같은 시드의
-`torch.Generator`를 쓰거나, `t`를 `[0,1]` 등간격 격자로 고정하고 `x_0`를 윈도우 인덱스로
-시드해 재현 가능하게 만든다. 이것만으로 위 편차가 0이 된다.
+**✅ 수정 완료**: `MonthlyLatentFlow.loss`에 `generator` 인자를 추가하고, `_epoch`이 평가일 때만
+batch마다 `eval_seed * 1_000_003 + batch_index`로 시드한 generator를 넘긴다. 학습 경로는
+독립 추출을 그대로 쓴다. 재샘플링 구간 자체도 줄였다: generator가 주어지면 `t`를
+독립 추출 대신 `[0,1)` 위에 **stratified**(`(i + u) / batch_size`)로 배치해 같은 batch 크기에서
+flow loss 추정 분산이 줄어든다.
+
+재측정 (동일 모델·동일 loader 6회):
+
+```
+total loss x6     : 11.843657 (6회 전부 동일)
+flow_matching_mse : 1.535734  (6회 전부 동일)
+편차              : 0.0
+```
+
+회귀 테스트: `test_seeded_loss_is_reproducible_and_unseeded_is_not`.
+
+남은 문제: 이 수정은 **비교를 재현 가능하게** 만들 뿐, "선택이 사실상 AE 재구성만 본다"는
+구조는 그대로다. 그건 P1-5(샘플링 기반 skill 지표)로 풀어야 한다.
 
 ### P1-4. flow loss가 encoder로 역전파된다 (detach 없음)
 
@@ -130,9 +177,17 @@ decoder는 0/12개가 받는다.
 더하므로, 재구성 항이 버텨주지 못하면 latent collapse로 갈 수 있다. 표준 latent flow matching은
 autoencoder를 먼저 학습해 freeze하거나, 최소한 flow 항에서 `target_latent.detach()`를 쓴다.
 
-**수정 방향**: `target_velocity = target_latent.detach() - source_latent` (와
-`history_latents.detach()`)로 flow 항을 분리하거나, AE 사전학습 → freeze → flow 학습의
-2단계로 나눈다. 후자가 P0-3의 "선택이 AE만 본다" 문제도 함께 해소한다.
+**✅ 수정 완료**: flow branch 전체가 `flow_target_latent = target_latent.detach()`를 쓴다.
+`target_velocity`뿐 아니라 `interpolated`의 입력에도 detach된 latent를 넣는 것이 중요하다 —
+velocity만 detach하면 `x_t` 경로로 gradient가 그대로 새어 encoder가 여전히 "정답이 들어간
+입력"을 만들 수 있다.
+
+재구성 항과 latent 정규화 항은 detach하지 **않는다**(AE는 그쪽으로 학습돼야 한다).
+history를 통한 conditioning 경로도 살아 있으므로 encoder는 계속 학습된다 —
+없어진 것은 "자기가 예측할 target을 쉽게 만드는" 인센티브뿐이다.
+
+재측정: `d(flow loss)/d(target input)` = **0.0** (수정 전에는 encoder 12/12개가 gradient 수신).
+회귀 테스트: `test_flow_term_does_not_backpropagate_through_the_target_encoder`.
 
 ### P1-5. 학습 중에 예보 성능을 한 번도 측정하지 않는다
 
@@ -237,34 +292,29 @@ E  assert 'era5.v2' == 'era5.v1'
 `tests/test_era5_vertical.py:59`를 같이 고치지 않았다. PR 본문은 "25 passed"라고 적혀 있지만
 현재 HEAD에서는 32 passed / 1 failed다. GitHub의 `pytest` 체크도 `failure` 상태다.
 
-한 줄 수정이다:
-
-```diff
---- a/tests/test_era5_vertical.py
-+++ b/tests/test_era5_vertical.py
-@@
--    assert schema["source_metadata"]["adapter"] == "era5.v1"
-+    assert schema["source_metadata"]["adapter"] == "era5.v2"
-```
+**✅ 수정 완료**: assertion을 아카이브가 실제로 쓰는 `era5.v2`로 맞췄다. 아카이브 계약 자체는
+바뀐 게 없고 테스트만 라벨을 따라가지 못한 것이다.
 
 PR #1은 `main`과도 conflict(`mergeable_state: dirty`) 상태다. `main`이 `30f0fff` 이후
 `fixed_step_data.py` / `large_data.py` 라인으로 갈라져 나갔기 때문이다.
 
-## 4. 권장 처리 순서
+## 4. 남은 작업
 
-1. **P0-1** AMP finite guard 완화 — 안 고치면 500GB run이 재현성 있게 죽는다.
-2. **P0-3** validation의 `(t, x_0)` 고정 — 한 줄 수준이고, 이걸 고쳐야 이후 실험 비교가 성립한다.
-3. **P2-10** stale test 수정 — CI를 green으로 되돌린다.
-4. **P0-2** patch 경도 seam — 경도 전체 폭 유지 또는 조건부 replicate padding.
-5. **P1-4** flow 항에서 `target_latent.detach()` (또는 AE 2단계 학습).
-6. **P1-5 / P1-6** 학습 중 샘플링 기반 skill 지표 + 위도 가중 RMSE/ACC + 월별 climatology baseline.
-7. **P1-7 / P2-8 / P2-9** tiled noise 공유, 위치 채널, `observed_fraction` 활용.
+P0-1 / P0-2 / P0-3 / P1-4 / P2-10은 이 브랜치에서 수정했다. 남은 것은 순서대로:
+
+1. **P1-5** 학습 중 샘플링 기반 skill 지표 — 이게 있어야 `best.pt` 선택이 예보 성능과 연결된다.
+   P0-3 수정은 비교를 재현 가능하게 만들었을 뿐, 무엇을 비교하는지는 바꾸지 않았다.
+2. **P1-6** 위도 가중 RMSE/ACC + 월별 climatology baseline — 현재 숫자는 전역 예보 성능을
+   대표하지 않는다.
+3. **P1-7** tiled 샘플링의 전역 noise 공유.
+4. **P2-8** 위도/경도 정적 채널. P0-2를 "경도 전 폭 유지" 방식으로 다시 풀면 함께 줄어든다.
+5. **P2-9** `observed_fraction.npy` 활용 + 로드 시 전량 Inf 스캔 제거 (재시작마다 ~137 GiB).
 
 ## 5. 재현 방법
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e '.[test,io]'
-.venv/bin/python -m pytest -q          # 32 passed, 1 failed (P2-10)
+.venv/bin/python -m pytest -q          # 39 passed
 ```
 
 P0-3, P0-2, P1-4의 수치는 합성 4×8 격자 아카이브로 `train_flow_model` →

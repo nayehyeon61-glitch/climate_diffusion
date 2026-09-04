@@ -12,8 +12,14 @@ from climate_diffusion.data import (
     reconstruct_spatial_dataset,
     spatialize_dataset,
 )
+from climate_diffusion.config import FlowLossConfig
 from climate_diffusion.model import MonthlyLatentFlow
-from climate_diffusion.spatial import PeriodicConv2d, SpatialAutoencoder, tiled_apply
+from climate_diffusion.spatial import (
+    PeriodicConv2d,
+    SpatialAutoencoder,
+    set_longitude_wrap,
+    tiled_apply,
+)
 
 
 def spatial_config(backend="spatial_conv", height=16, width=24):
@@ -69,6 +75,84 @@ def test_periodic_longitude_convolution_is_roll_equivariant():
     expected = torch.roll(layer(values), shifts=shift, dims=-1)
     actual = layer(torch.roll(values, shifts=shift, dims=-1))
     torch.testing.assert_close(actual, expected)
+
+
+def test_sub_global_patch_pads_by_replication_instead_of_wrapping():
+    """A patch narrower than the grid must not join its two edges."""
+    torch.manual_seed(3)
+    layer = PeriodicConv2d(1, 1)
+    field = torch.randn(1, 1, 6, 32)
+    patch = field[..., 4:12]
+
+    set_longitude_wrap(layer, False)
+    actual = layer(patch)
+
+    padded = torch.nn.functional.pad(patch, (1, 1, 0, 0), mode="replicate")
+    padded = torch.nn.functional.pad(padded, (0, 0, 1, 1), mode="replicate")
+    torch.testing.assert_close(actual, layer.conv(padded))
+
+    # The interior never depended on the padding mode, only the two edges did.
+    set_longitude_wrap(layer, True)
+    wrapped = layer(patch)
+    torch.testing.assert_close(actual[..., 1:-1], wrapped[..., 1:-1])
+    assert not torch.allclose(actual[..., 0], wrapped[..., 0])
+
+
+def test_model_wraps_longitude_only_for_globe_spanning_input():
+    config = spatial_config(height=8, width=16)
+    model = MonthlyLatentFlow(config)
+
+    def wrap_flags():
+        return {
+            layer.wrap_longitude
+            for layer in model.modules()
+            if isinstance(layer, PeriodicConv2d)
+        }
+
+    model.loss(torch.randn(2, 3, 2, 8, 16), torch.randn(2, 2, 8, 16))
+    assert wrap_flags() == {True}
+
+    model.loss(torch.randn(2, 3, 2, 8, 8), torch.randn(2, 2, 8, 8))
+    assert wrap_flags() == {False}
+
+    model.sample(torch.randn(1, 3, 2, 8, 16), integration_steps=1)
+    assert wrap_flags() == {True}
+
+
+def test_flow_term_does_not_backpropagate_through_the_target_encoder():
+    """The flow branch trains against a detached latent, not a moving one."""
+    torch.manual_seed(5)
+    model = MonthlyLatentFlow(spatial_config(height=8, width=16))
+    target = torch.randn(2, 2, 8, 16, requires_grad=True)
+    losses = model.loss(
+        torch.randn(2, 3, 2, 8, 16),
+        target,
+        FlowLossConfig(
+            reconstruction_weight=0.0,
+            flow_weight=1.0,
+            latent_regularization_weight=0.0,
+        ),
+    )
+    losses["loss"].backward()
+    assert target.grad is None or torch.count_nonzero(target.grad) == 0
+
+
+def test_seeded_loss_is_reproducible_and_unseeded_is_not():
+    torch.manual_seed(6)
+    model = MonthlyLatentFlow(spatial_config(height=8, width=16))
+    history = torch.randn(4, 3, 2, 8, 16)
+    target = torch.randn(4, 2, 8, 16)
+
+    def flow_loss(seed=None):
+        generator = None
+        if seed is not None:
+            generator = torch.Generator().manual_seed(seed)
+        with torch.no_grad():
+            return float(model.loss(history, target, generator=generator)["flow_matching_mse"])
+
+    assert flow_loss(seed=11) == flow_loss(seed=11)
+    assert flow_loss(seed=11) != flow_loss(seed=12)
+    assert flow_loss() != flow_loss()
 
 
 def test_tiled_overlap_stitching_preserves_identity_and_dateline():

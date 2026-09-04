@@ -18,6 +18,7 @@ from climate_diffusion.inference import LatentFlowForecaster
 from climate_diffusion.evaluation import _error_metrics
 from climate_diffusion.model import MonthlyLatentFlow
 from climate_diffusion.train import (
+    _epoch,
     _train_only_statistics,
     build_raw_month_temporal_split,
 )
@@ -177,6 +178,56 @@ def test_loss_and_checkpoint_normalization_finite_guards(tmp_path):
     _legacy_checkpoint(checkpoint, bad_scale=True)
     with pytest.raises(FloatingPointError, match="checkpoint state_scale"):
         LatentFlowForecaster(checkpoint, device="cpu")
+
+
+def _overflowing_epoch(*, scaler):
+    """Run one training epoch whose gradients always overflow to +Inf."""
+    from climate_diffusion.config import FlowLossConfig
+
+    torch.manual_seed(0)
+    model = MonthlyLatentFlow(
+        FlowModelConfig(state_dim=2, history_months=2, latent_dim=2, hidden_dim=8)
+    )
+    for parameter in model.parameters():
+        parameter.register_hook(lambda grad: torch.full_like(grad, float("inf")))
+    batches = [
+        {
+            "history": torch.zeros(1, 2, 2),
+            "target": torch.zeros(1, 2),
+        }
+    ]
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    before = [parameter.detach().clone() for parameter in model.parameters()]
+    metrics = _epoch(
+        model,
+        batches,
+        FlowLossConfig(),
+        torch.device("cpu"),
+        optimizer,
+        scaler=scaler,
+    )
+    unchanged = all(
+        torch.equal(old, new)
+        for old, new in zip(before, model.parameters(), strict=True)
+    )
+    return metrics, unchanged
+
+
+def test_amp_gradient_overflow_skips_the_step_instead_of_ending_the_run():
+    scaler = torch.amp.GradScaler("cpu", enabled=True)
+    initial_scale = scaler.get_scale()
+
+    metrics, parameters_unchanged = _overflowing_epoch(scaler=scaler)
+
+    # GradScaler owns this event: it skips the update and backs the scale off.
+    assert metrics["amp_overflow_steps"] == 1.0
+    assert parameters_unchanged
+    assert scaler.get_scale() < initial_scale
+
+
+def test_non_finite_gradient_without_loss_scaling_still_stops_the_run():
+    with pytest.raises(FloatingPointError, match="gradient"):
+        _overflowing_epoch(scaler=None)
 
 
 def test_forecast_rejects_inf_but_train_mean_imputes_nan(tmp_path):
