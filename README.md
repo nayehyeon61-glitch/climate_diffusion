@@ -408,3 +408,275 @@ objective`의 결합과 세 실험군의 정량 비교에서 형성됩니다.
   distribution과 단기 cyclone track 평가는 분리해야 합니다.
 - 실제 논문 실험에서는 persistence, climatology, WeatherNext2와 동일 split에서
   CRPS·RMSE·distribution calibration·track error를 함께 비교해야 합니다.
+
+## 7. RunPod에서 전체 시스템 실행
+
+이 절차는 `climate_diffusion`과 `typnonn_preesure_data_loader`를 하나의 RunPod
+`/workspace`에서 실행하는 production-candidate 경로입니다. **monthly spatial Flow와
+P15용 fixed-step Flow는 서로 다른 checkpoint입니다.** monthly checkpoint의 기본
+720h step을 P15 360h endpoint로 사용하면 안 됩니다.
+
+### 7.1 현재 branch 선택
+
+두 production PR이 `main`에 merge되기 전에는 검증된 integration branch를 사용합니다.
+merge 후에는 두 저장소 모두 `main`으로 바꿉니다.
+
+```bash
+mkdir -p /workspace/{repos,data,cache,checkpoints,outputs,logs}
+mkdir -p /workspace/data/{era5,hres,ibtracs,distribution}
+mkdir -p /workspace/cache/{flow_360h,gpt_states}
+mkdir -p /workspace/checkpoints/flow_matching/{monthly_spatial_025,fixed_step}
+mkdir -p /workspace/checkpoints/gpt_double_loss
+
+df -h /workspace
+nvidia-smi
+
+cd /workspace/repos
+git clone https://github.com/nayehyeon61-glitch/climate_diffusion.git
+cd climate_diffusion
+git checkout integration/production-consolidation
+python -m pip install -U pip
+pip install -e '.[io,test]'
+pytest -q
+git rev-parse HEAD | tee /workspace/logs/climate_diffusion.sha
+
+cd /workspace/repos
+git clone https://github.com/nayehyeon61-glitch/typnonn_preesure_data_loader.git
+cd typnonn_preesure_data_loader
+git checkout integration/p15-360h-survival-contract
+# 중요: 현재 typnonn의 [flow] extra는 오래된 climate_diffusion SHA를 pin한다.
+# 위에서 설치한 local climate_diffusion을 유지하기 위해 [flow]는 설치하지 않는다.
+pip install -e '.[io,test,small,gpt]'
+pytest -q
+git rev-parse HEAD | tee /workspace/logs/typnonn.sha
+```
+
+### 7.2 원자료 배치
+
+```text
+/workspace/data/
+├── era5/       # ERA5 NetCDF/Zarr, 6-hourly 권장
+├── hres/       # 선택적 HRES
+├── ibtracs/    # IBTrACS.ALL.v04r01.csv
+└── distribution/
+```
+
+먼저 태풍·주변 고기압 통합 표를 만듭니다.
+
+```bash
+cd /workspace/repos/typnonn_preesure_data_loader
+
+build-typhoon-pressure-data \
+  --ibtracs /workspace/data/ibtracs/IBTrACS.ALL.v04r01.csv \
+  --era5 '/workspace/data/era5/*.nc' \
+  --basin WP --agency TOKYO \
+  --radius-km 2500 --max-highs 3 \
+  --output /workspace/data/integrated_typhoon_pressure.parquet
+```
+
+### 7.3 monthly spatial Flow: smoke → full training
+
+monthly spatial Flow는 장기 전지구 dynamics 용도이며 P15 endpoint 모델이 아닙니다.
+
+```bash
+cd /workspace/repos/climate_diffusion
+
+prepare-era5-climate-flow \
+  --source /workspace/data/era5/ \
+  --variables msl t2m u10 v10 z t q u v \
+  --target-lat-points 721 --target-lon-points 1440 \
+  --output /workspace/data/monthly_climate_spatial_025
+
+# smoke
+train-runpod-climate-flow \
+  --archive /workspace/data/monthly_climate_spatial_025 \
+  --checkpoint-dir /workspace/checkpoints/flow_matching/monthly_spatial_025/smoke \
+  --model-backend spatial_conv \
+  --history-months 6 --lead-months 1 \
+  --epochs 2 --batch-size 1 \
+  --patch-height 128 --patch-width 128 --tile-overlap 32 \
+  --gradient-accumulation-steps 8 \
+  --min-observed-fraction 0.95 \
+  --min-free-disk-gb 50
+
+# full
+train-runpod-climate-flow \
+  --archive /workspace/data/monthly_climate_spatial_025 \
+  --checkpoint-dir /workspace/checkpoints/flow_matching/monthly_spatial_025/operator \
+  --model-backend spatial_operator \
+  --history-months 6 --lead-months 1 \
+  --epochs 100 --batch-size 1 \
+  --spatial-base-channels 32 \
+  --spatial-latent-channels 16 \
+  --spatial-downsample-levels 3 \
+  --operator-modes-lat 12 --operator-modes-lon 24 \
+  --patch-height 256 --patch-width 256 --tile-overlap 64 \
+  --gradient-accumulation-steps 8 \
+  --min-observed-fraction 0.95 \
+  --save-every-epochs 5 --keep-epoch-snapshots 3 \
+  --num-workers 2 --min-free-disk-gb 50
+```
+
+같은 명령을 다시 실행하면 `latest.pt`에서 resume합니다. 새 학습으로 강제 시작할
+때만 `--no-resume`을 사용합니다.
+
+### 7.4 P15용 fixed-step Flow: 권장 24h/6h step, endpoint=360h
+
+P15의 계약은 **forecast horizon이 정확히 360h**라는 뜻입니다. 전체 0→360h 경로를
+사용하려면 24h 또는 WeatherNext cadence와 같은 6h step을 권장합니다. `--step-hours
+360`은 Day-15 endpoint 하나만 직접 생성하는 ablation입니다.
+
+```bash
+cd /workspace/repos/climate_diffusion
+
+prepare-fixed-step-climate-flow \
+  --fields /workspace/data/era5/era5_history.zarr \
+  --integrated /workspace/data/integrated_typhoon_pressure.parquet \
+  --variables msl t2m u10 v10 z t q u v \
+  --step-hours 24 \
+  --target-lat-points 18 --target-lon-points 36 \
+  --output /workspace/data/fixed_step_24h.npz
+
+# smoke
+train-runpod-fixed-step-climate-flow \
+  --archive /workspace/data/fixed_step_24h.npz \
+  --checkpoint-dir /workspace/checkpoints/flow_matching/fixed_step/smoke \
+  --history-steps 2 --lead-steps 1 \
+  --latent-dim 32 --hidden-dim 128 \
+  --epochs 2 --batch-size 16
+
+# full / resume-safe
+train-runpod-fixed-step-climate-flow \
+  --archive /workspace/data/fixed_step_24h.npz \
+  --checkpoint-dir /workspace/checkpoints/flow_matching/fixed_step/production \
+  --history-steps 4 --lead-steps 1 \
+  --latent-dim 64 --hidden-dim 256 \
+  --epochs 100 --batch-size 32 \
+  --learning-rate 1e-4 \
+  --validation-fraction 0.15 --test-fraction 0.15 \
+  --purge-windows 1 --seed 7
+```
+
+fixed-step trainer도 `latest.pt`와 `best.pt`를 분리합니다. resume checkpoint의
+`forecast_step_hours`와 현재 archive step이 다르면 즉시 실패합니다.
+
+### 7.5 frozen 360h rollout/token smoke
+
+아래 예제는 24h checkpoint를 15번 rollout하여 정확히 360h endpoint를 만듭니다.
+monthly 720h checkpoint를 넣으면 360h 요청이 거부되어야 정상입니다.
+
+```bash
+cd /workspace/repos/typnonn_preesure_data_loader
+
+prepare-weathernext-tokens \
+  --backend flow_matching \
+  --checkpoint /workspace/checkpoints/flow_matching/fixed_step/production/best.pt \
+  --initial-state /workspace/data/era5/era5_history.zarr \
+  --storm-id WP_TEST_001 \
+  --init-time 2025-08-01T00:00:00 \
+  --storm-lat 22.5 --storm-lon 132.0 \
+  --horizon-hours 360 --max-lead-hours 360 \
+  --output-dir /workspace/cache/flow_360h
+```
+
+이 단계에서 cache provenance의 `forecast_backend=flow_matching`,
+`forecast_horizon_hours=360`, checkpoint SHA, `forecast_step_hours`를 기록합니다. Flow는
+`eval() + requires_grad_(False) + inference-only` 경계 안에서만 사용됩니다.
+
+### 7.6 storm split → distribution → GPT state cache
+
+```bash
+cd /workspace/repos/typnonn_preesure_data_loader
+
+build-storm-split \
+  --integrated /workspace/data/integrated_typhoon_pressure.parquet \
+  --output /workspace/data/storm_split.csv
+
+build-typhoon-distribution-targets \
+  --ibtracs /workspace/data/ibtracs/IBTrACS.ALL.v04r01.csv \
+  --basins WP \
+  --output-dir /workspace/data/distribution
+
+export OPENAI_API_KEY='...'
+build-gpt-state-cache \
+  --integrated /workspace/data/integrated_typhoon_pressure.parquet \
+  --output-dir /workspace/cache/gpt_states \
+  --on-error mask
+```
+
+같은 `storm_id`는 train/validation/test 중 하나에만 속해야 합니다. GPT API는 학습
+loop에서 호출하지 않고 cache를 먼저 생성합니다.
+
+### 7.7 GPT Router + Transformer + Q_t/survival smoke
+
+```bash
+train-weathernext-transformer \
+  --integrated /workspace/data/integrated_typhoon_pressure.parquet \
+  --distribution /workspace/data/distribution/spatial_distribution.csv \
+  --weathernext-token-dir /workspace/cache/flow_360h \
+  --gpt-state-dir /workspace/cache/gpt_states \
+  --split-manifest /workspace/data/storm_split.csv \
+  --require-forecast-backend flow_matching \
+  --epochs 1 --batch-size 2 \
+  --distribution-samples 8 \
+  --distribution-weight 1.0 \
+  --track-weight 1.0 \
+  --survival-weight 1.0 \
+  --output /workspace/checkpoints/gpt_double_loss/smoke.pt
+```
+
+실험에서 API 실패 cache까지 금지하려면 `--require-valid-gpt-states`를 추가합니다.
+trainer는 token provenance의 forecast horizon이 Day 15, 즉 정확히 360h가 아니면
+실패하며, split 사이에 같은 storm이 겹쳐도 실패합니다.
+
+### 7.8 full downstream training
+
+```bash
+train-weathernext-transformer \
+  --integrated /workspace/data/integrated_typhoon_pressure.parquet \
+  --distribution /workspace/data/distribution/spatial_distribution.csv \
+  --weathernext-token-dir /workspace/cache/flow_360h \
+  --gpt-state-dir /workspace/cache/gpt_states \
+  --split-manifest /workspace/data/storm_split.csv \
+  --require-forecast-backend flow_matching \
+  --require-valid-gpt-states \
+  --epochs 50 --batch-size 8 \
+  --history 8 --track-steps 20 \
+  --model-dim 128 --num-heads 8 --num-layers 4 --decoder-layers 2 \
+  --distribution-samples 32 \
+  --distribution-weight 1.0 \
+  --track-weight 1.0 \
+  --survival-weight 1.0 \
+  --output /workspace/checkpoints/gpt_double_loss/gpt_double_loss.pt
+```
+
+### 7.9 RunPod 실행 전 최종 체크
+
+```bash
+cd /workspace/repos/climate_diffusion && pytest -q
+cd /workspace/repos/typnonn_preesure_data_loader && pytest -q
+
+df -h /workspace
+nvidia-smi
+
+cat /workspace/logs/climate_diffusion.sha
+cat /workspace/logs/typnonn.sha
+```
+
+실제 full run은 다음 순서만 지킵니다.
+
+```text
+ERA5/HRES + IBTrACS
+  → integrated table
+  → monthly spatial archive → spatial smoke → spatial full training
+  → fixed-step archive → fixed-step smoke → fixed-step full/resume
+  → frozen exact-360h token cache
+  → storm-level split + distribution target + GPT state cache
+  → GPT-DoubleLoss smoke
+  → full GPT Router/Transformer + Q_t/survival training
+  → held-out storm evaluation
+```
+
+Rollback은 각 저장소의 `git rev-parse HEAD` 기록, Flow `best.pt`, downstream best
+checkpoint를 기준으로 합니다. branch가 `main`에 merge된 이후에는 README의 integration
+branch checkout을 `git checkout main`으로 교체하고, 실행 전에 SHA를 다시 기록합니다.
