@@ -3,7 +3,9 @@ name: tests
 on:
   push:
     branches:
+      - main
       - feature/spatial-025-flow-autoencoder
+      - integration/360h-spatial-contract-v2
   pull_request:
 
 jobs:
