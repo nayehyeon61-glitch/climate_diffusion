@@ -11,7 +11,14 @@ from torch.utils.checkpoint import checkpoint
 
 
 class PeriodicConv2d(nn.Module):
-    """Convolution with circular longitude and replicated latitude padding."""
+    """Convolution with circular longitude and replicated latitude padding.
+
+    Wrapping longitude is only correct when the input spans the whole globe. A
+    patch that covers part of the longitude range must not wrap, or every layer
+    joins its two edges as if they were neighbours when they are thousands of
+    kilometres apart. ``wrap_longitude`` selects between the two, and
+    :func:`set_longitude_wrap` drives it from the caller that knows the grid.
+    """
 
     def __init__(
         self,
@@ -26,6 +33,7 @@ class PeriodicConv2d(nn.Module):
         if kernel_size % 2 != 1:
             raise ValueError("PeriodicConv2d requires an odd kernel size")
         self.padding = kernel_size // 2
+        self.wrap_longitude = True
         self.conv = nn.Conv2d(
             in_channels,
             out_channels,
@@ -38,10 +46,18 @@ class PeriodicConv2d(nn.Module):
     def forward(self, values: torch.Tensor) -> torch.Tensor:
         pad = self.padding
         if pad:
-            values = F.pad(values, (pad, pad, 0, 0), mode="circular")
+            longitude_mode = "circular" if self.wrap_longitude else "replicate"
+            values = F.pad(values, (pad, pad, 0, 0), mode=longitude_mode)
             # Replication is stable at the poles and does not invent a second seam.
             values = F.pad(values, (0, 0, pad, pad), mode="replicate")
         return self.conv(values)
+
+
+def set_longitude_wrap(module: nn.Module, wrap: bool) -> None:
+    """Enable circular longitude padding only for globe-spanning inputs."""
+    for layer in module.modules():
+        if isinstance(layer, PeriodicConv2d):
+            layer.wrap_longitude = wrap
 
 
 class SpatialResidualBlock(nn.Module):

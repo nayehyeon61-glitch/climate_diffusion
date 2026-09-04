@@ -14,6 +14,7 @@ from .spatial import (
     SpatialAutoencoder,
     SpatialResidualBlock,
     SpectralOperator2d,
+    set_longitude_wrap,
     tiled_apply,
 )
 from .validation import require_finite_tensor
@@ -201,6 +202,40 @@ class MonthlyLatentFlow(nn.Module):
     def is_spatial(self) -> bool:
         return self.config.backend != "vector_mlp"
 
+    def _configure_longitude_wrap(self, width: int) -> None:
+        """Wrap longitude only when the input actually spans the whole grid."""
+        if self.is_spatial:
+            set_longitude_wrap(self, width == self.config.grid_width)
+
+    def _draw_flow_pair(
+        self,
+        target_latent: torch.Tensor,
+        batch_size: int,
+        time_dtype: torch.dtype,
+        generator: torch.Generator | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Sample the flow-matching source latent and interpolation time.
+
+        With a generator the draw is reproducible and the time is stratified
+        over ``[0, 1)`` instead of independent per sample, so an evaluation pass
+        estimates the flow loss with far less Monte-Carlo noise. Training keeps
+        independent draws.
+        """
+        device = target_latent.device
+        if generator is None:
+            return torch.randn_like(target_latent), torch.rand(
+                batch_size, device=device, dtype=time_dtype
+            )
+        source_latent = torch.randn(
+            target_latent.shape,
+            device=device,
+            dtype=target_latent.dtype,
+            generator=generator,
+        )
+        offset = torch.rand(1, device=device, dtype=time_dtype, generator=generator)
+        strata = torch.arange(batch_size, device=device, dtype=time_dtype)
+        return source_latent, (strata + offset) / batch_size
+
     def loss(
         self,
         history: torch.Tensor,
@@ -208,6 +243,8 @@ class MonthlyLatentFlow(nn.Module):
         config: FlowLossConfig | None = None,
         history_auxiliary: torch.Tensor | None = None,
         target_mask: torch.Tensor | None = None,
+        *,
+        generator: torch.Generator | None = None,
     ) -> dict[str, torch.Tensor]:
         config = config or FlowLossConfig()
         require_finite_tensor(history, "flow loss history input")
@@ -218,6 +255,7 @@ class MonthlyLatentFlow(nn.Module):
         if self.is_spatial:
             if history.ndim != 5 or target.ndim != 4:
                 raise ValueError("Spatial flow expects history [B,T,C,H,W] and target [B,C,H,W]")
+            self._configure_longitude_wrap(target.shape[-1])
             batch, months, channels, height, width = history.shape
             encoded_history = self.autoencoder.encode(
                 history.reshape(batch * months, channels, height, width)
@@ -236,11 +274,18 @@ class MonthlyLatentFlow(nn.Module):
         require_finite_tensor(history_latents, "encoded history latent")
         require_finite_tensor(target_latent, "encoded target latent")
         require_finite_tensor(reconstruction, "decoded target reconstruction")
-        source_latent = torch.randn_like(target_latent)
-        time = torch.rand(batch_size, device=target.device, dtype=target.dtype)
+        # The flow branch trains on a fixed target: without the detach the
+        # encoder also learns to make its own latents easy to predict, which
+        # together with the latent penalty pushes towards latent collapse.
+        flow_target_latent = target_latent.detach()
+        source_latent, time = self._draw_flow_pair(
+            flow_target_latent, batch_size, target.dtype, generator
+        )
         interpolation_time = time.reshape(time_shape)
-        interpolated = (1.0 - interpolation_time) * source_latent + interpolation_time * target_latent
-        target_velocity = target_latent - source_latent
+        interpolated = (
+            1.0 - interpolation_time
+        ) * source_latent + interpolation_time * flow_target_latent
+        target_velocity = flow_target_latent - source_latent
         if self.is_spatial:
             condition = self.vector_field.encode_condition(history_latents, history_auxiliary)
         else:
@@ -291,6 +336,7 @@ class MonthlyLatentFlow(nn.Module):
         if history_auxiliary is not None:
             require_finite_tensor(history_auxiliary, "flow sampling auxiliary history")
         if self.is_spatial:
+            self._configure_longitude_wrap(history.shape[-1])
             batch, months, channels, height, width = history.shape
             encoded_history = self.autoencoder.encode(
                 history.reshape(batch * months, channels, height, width)

@@ -145,11 +145,13 @@ def _epoch(
     mixed_precision: bool = False,
     gradient_accumulation_steps: int = 1,
     scaler: torch.amp.GradScaler | None = None,
+    eval_seed: int | None = None,
 ) -> dict[str, float]:
     training = optimizer is not None
     model.train(training)
     totals: dict[str, float] = {}
     batches = 0
+    overflow_steps = 0
     context = torch.enable_grad() if training else torch.no_grad()
     if training:
         optimizer.zero_grad(set_to_none=True)
@@ -163,6 +165,13 @@ def _epoch(
             history_auxiliary = batch.get("history_auxiliary")
             if history_auxiliary is not None:
                 history_auxiliary = history_auxiliary.to(device)
+            # A seeded generator makes every evaluation pass over the same
+            # weights return the same number, so "best epoch" is a real
+            # comparison rather than a draw from the flow-matching noise.
+            batch_generator = None
+            if eval_seed is not None:
+                batch_generator = torch.Generator(device=device)
+                batch_generator.manual_seed(eval_seed * 1_000_003 + batch_index)
             with torch.autocast(
                 device_type=device.type,
                 dtype=torch.float16,
@@ -174,6 +183,7 @@ def _epoch(
                     loss_config,
                     history_auxiliary=history_auxiliary,
                     target_mask=target_mask,
+                    generator=batch_generator,
                 )
             if training:
                 scaled_loss = losses["loss"] / gradient_accumulation_steps
@@ -185,26 +195,46 @@ def _epoch(
                     (batch_index + 1) % gradient_accumulation_steps == 0
                     or batch_index + 1 == len(loader)
                 ):
-                    if scaler is not None and scaler.is_enabled():
+                    amp = scaler is not None and scaler.is_enabled()
+                    overflowed = False
+                    if amp:
                         scaler.unscale_(optimizer)
-                    for name, parameter in model.named_parameters():
-                        if parameter.grad is not None:
-                            require_finite_tensor(parameter.grad, f"gradient {name}")
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                    if scaler is not None and scaler.is_enabled():
+                        # An fp16 gradient overflow is how GradScaler is meant to
+                        # find its scale: it skips the step and backs the scale
+                        # off. Counting it keeps the signal visible without
+                        # killing a multi-day run over a routine event.
+                        overflowed = any(
+                            not bool(torch.isfinite(parameter.grad).all())
+                            for parameter in model.parameters()
+                            if parameter.grad is not None
+                        )
+                        overflow_steps += int(overflowed)
+                    else:
+                        # Without loss scaling a non-finite gradient is a real
+                        # defect, so it still stops the run.
+                        for name, parameter in model.named_parameters():
+                            if parameter.grad is not None:
+                                require_finite_tensor(parameter.grad, f"gradient {name}")
+                    if not overflowed:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    if amp:
                         scaler.step(optimizer)
                         scaler.update()
                     else:
                         optimizer.step()
-                    for name, parameter in model.named_parameters():
-                        require_finite_tensor(parameter, f"updated parameter {name}")
+                    if not overflowed:
+                        for name, parameter in model.named_parameters():
+                            require_finite_tensor(parameter, f"updated parameter {name}")
                     optimizer.zero_grad(set_to_none=True)
             for name, value in losses.items():
                 totals[name] = totals.get(name, 0.0) + float(value.detach().cpu())
             batches += 1
     if batches == 0:
         raise ValueError("Monthly split produced no training/validation batches")
-    return {name: value / batches for name, value in totals.items()}
+    metrics = {name: value / batches for name, value in totals.items()}
+    if training:
+        metrics["amp_overflow_steps"] = float(overflow_steps)
+    return metrics
 
 
 def _train_only_statistics(
@@ -466,6 +496,7 @@ def train_flow_model(
             device,
             optimizer=None,
             mixed_precision=mixed_precision,
+            eval_seed=seed,
         )
         history.append(
             {"epoch": epoch, "train": train_metrics, "validation": validation_metrics}

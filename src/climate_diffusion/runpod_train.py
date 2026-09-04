@@ -368,6 +368,7 @@ def train_runpod_spatial_flow(
             device,
             optimizer=None,
             mixed_precision=mixed_precision,
+            eval_seed=seed,
         )
         improved = validation_metrics["loss"] < best_validation
         if improved:
