@@ -19,7 +19,7 @@ flowchart TB
         FIELD["ERA5/HRES global fields"]
         TABLE["IBTrACS + pressure-system table"]
         MONTH["Causal completed-month aggregation"]
-        STATE["Monthly state vector + schema"]
+        STATE["Vector or spatial monthly archive + schema"]
         FIELD --> MONTH
         TABLE --> MONTH
         MONTH --> STATE
@@ -94,6 +94,37 @@ data/
 IBTrACS 통합 표만으로는 전 지구 대기장을 복원할 수 없습니다. WeatherNext 대체
 runner를 만들려면 반드시 ERA5/HRES 같은 gridded field도 함께 학습해야 합니다.
 
+### 분할된 실제 ERA5 입력
+
+변수·pressure level 파일이 나뉜 ERA5 디렉터리는 전용 adapter로 기존 spatial
+archive에 연결합니다. adapter는 `valid_time/latitude/longitude/pressure_level`을
+기존 `time/lat/lon/level` 계약으로 정규화하고, 경도를 `[0, 360)`으로 정렬합니다.
+이후의 월 집계, 결측치 정책, train-only 정규화 및 grid fingerprint는 기존 구현을
+그대로 사용합니다.
+
+```bash
+prepare-era5-climate-flow \
+  --source data/era5/ \
+  --variables msl t2m u10 v10 z t q u v \
+  --target-lat-points 721 --target-lon-points 1440 \
+  --output data/monthly_climate_spatial_025
+```
+
+`--source`는 하나 이상의 NetCDF/Zarr 경로, glob 또는 디렉터리를 받습니다. HRES는
+forecast init/step을 먼저 하나의 valid-time 계열로 바꾼 뒤 같은 archive 경계를
+사용합니다. 분석장에는 기본 `--lead-hours 0`, 특정 forecast lead에는 값을 명시합니다.
+
+```bash
+prepare-hres-climate-flow \
+  --source data/hres/ --lead-hours 0 \
+  --variables msl t2m u10 v10 z t q u v \
+  --target-lat-points 721 --target-lon-points 1440 \
+  --output data/monthly_hres_spatial_025
+```
+
+HRES가 0.1°이면 선형 보간으로 정확한 `721×1440` 전지구 grid를 만들며, 선택한
+lead와 regridding provenance가 schema fingerprint에 포함됩니다.
+
 ## 3. 다음 1개월 Flow Matching 학습
 
 ```bash
@@ -142,8 +173,10 @@ flowchart LR
 +\lambda_z\|z_1\|_2^2.
 \]
 
-시간 순서대로 train/validation/test를 분리하며 경계 사이의 겹치는 window를
-`--purge-windows`만큼 제거합니다. 정규화 통계는 train 구간에서만 계산합니다.
+시간 순서대로 **raw calendar month를 먼저** train/validation/test로 분리하고 각
+구간 안에서만 window를 만듭니다. 따라서 기본 `history=6`, `lead=1`,
+`purge=1`에서도 서로 다른 split이 원시 월을 공유하지 않습니다. 정규화와 결측치
+보간 통계는 train raw-month 구간의 관측값만으로 계산합니다.
 최적 validation checkpoint와 함께 다음 artifact를 저장합니다.
 
 ```text
@@ -154,6 +187,96 @@ climate-flow-monthly-v1.manifest.json
 ```
 
 manifest에는 SHA-256, 변수 schema, seed와 고정 test window가 기록됩니다.
+또한 raw-month index/time 범위와 archive schema·grid·channel·time fingerprint를
+기록하여 다른 archive를 실수로 평가하는 것을 차단합니다.
+
+### 결측치와 시간축 안전 계약
+
+| 입력 상태 | 정책 |
+|---|---|
+| `+Inf` / `-Inf` | archive 생성·로딩 즉시 변수/월/위치/개수와 함께 실패 |
+| `NaN` | 관측 mask에 보존하고 split 이후 train-only 평균으로 보간 |
+| spatial `NaN` | channel train mean으로 보간되어 정규화 후 정확히 0 |
+| train 구간 전체 결측 feature/channel | 학습 시작 전 실패 |
+| 결측 calendar month | 해당 행을 다음 달로 간주하지 않고 archive 검증 실패 |
+| 중복 timestamp | archive 생성 전에 실패 |
+| 입력 순서 뒤섞임 | 중복 검사 후 timestamp 정렬, 이후 월 연속성 검사 |
+
+입력, 보간·정규화 tensor, auxiliary, latent, 각 loss, gradient, checkpoint 통계,
+rollout, evaluation metric에는 단계별 finite guard가 적용됩니다. AMP 학습에서는
+`GradScaler`로 unscale한 뒤 gradient finite 여부를 검사합니다. 평가 JSON은
+`allow_nan=False`로 기록됩니다.
+
+### 0.25° 전지구 공간 backend
+
+원해상도에서는 `721×1440` grid를 하나의 dense vector로 만들지 않습니다. 공간
+archive는 `[month, channel, latitude, longitude]` 배열을 `.npy` memory map으로
+보존하고, pressure level 같은 비공간 차원만 channel로 펼칩니다. 따라서 한 달과
+patch만 읽어 학습할 수 있습니다.
+
+```bash
+prepare-climate-monthly-data \
+  --fields data/era5_025_history.zarr \
+  --integrated data/integrated.parquet \
+  --variables msl t2m u10 v10 z t q u v \
+  --layout spatial \
+  --target-lat-points 721 \
+  --target-lon-points 1440 \
+  --output data/monthly_climate_spatial_025
+
+train-climate-flow \
+  --archive data/monthly_climate_spatial_025 \
+  --model-backend spatial_operator \
+  --history-months 6 \
+  --spatial-base-channels 32 \
+  --spatial-latent-channels 16 \
+  --spatial-downsample-levels 3 \
+  --operator-modes-lat 12 \
+  --operator-modes-lon 24 \
+  --patch-height 256 \
+  --patch-width 256 \
+  --tile-overlap 64 \
+  --batch-size 1 \
+  --mixed-precision \
+  --gradient-accumulation-steps 8 \
+  --gradient-checkpointing \
+  --min-observed-fraction 0.95 \
+  --epochs 100 \
+  --output download/flow-matching/monthly-spatial-025/climate-flow-spatial-025.pt
+```
+
+두 공간 backend를 선택할 수 있습니다.
+
+| backend | 구성 | 용도 |
+|---|---|---|
+| `spatial_conv` | periodic convolutional autoencoder + ConvGRU vector field | 빠른 공간 baseline |
+| `spatial_operator` | 위 구조 + latent Fourier operator | 장거리 공간 mode 학습 |
+
+실제 0.25° 장기 job 전에는 안전 회귀 테스트를 먼저 실행하십시오.
+
+```bash
+python -m pytest -q
+
+prepare-climate-monthly-data \
+  --fields data/era5_025_history.zarr \
+  --layout spatial \
+  --target-lat-points 721 --target-lon-points 1440 \
+  --output data/monthly_climate_spatial_025
+```
+
+두 번째 명령은 archive를 쓰는 동안에도 `Inf`, 완전 결측 월/channel, 중복·결측 월을
+검사하므로 실패하면 학습으로 진행하면 안 됩니다. 저장소에는 실제 ERA5 0.25°
+학습 weight 또는 실데이터 evaluation artifact가 포함되어 있지 않습니다.
+
+공통으로 경도에는 circular padding을, 위도에는 pole-safe replicate padding을
+적용합니다. 721처럼 downsampling 배수로 나누어지지 않는 위도 크기는 decoder가
+명시적인 output shape로 복원합니다. 학습 시 random patch를 사용하고, rollout은
+경도를 dateline 너머로 wrap한 overlap tile을 Hann weight로 합칩니다. 기존
+`vector_mlp` archive와 v1/v2 checkpoint loader는 그대로 유지됩니다.
+
+공간 archive의 통합 태풍·기압 scalar는 `auxiliary.npy`에 따로 보존되어 ConvGRU
+condition에 들어갑니다. target 전지구장은 공간 tensor로 예측되며 scalar를 field에
+복제하지 않습니다.
 
 ## 4. 독립적인 월별 예측
 
@@ -274,10 +397,13 @@ objective`의 결합과 세 실험군의 정량 비교에서 형성됩니다.
 
 ## 현재 범위와 주의점
 
-- 본 모델은 초기 연구용 저해상도 latent baseline입니다.
+- `vector_mlp`는 초기 연구용 저해상도 latent baseline입니다.
+- `spatial_conv`와 `spatial_operator`는 0.25° 입력을 처리할 수 있는 구현 경로이며,
+  실제 0.25° weight 학습 완료를 의미하지 않습니다.
 - WeatherNext2의 물리적 성능을 자동으로 대체한다고 보장하지 않습니다.
-- 0.25° 전 지구 원해상도 학습에는 convolutional/operator autoencoder가 추가로
-  필요합니다.
+- 원해상도 학습 전에는 ERA5 변수·level 선정에 따라 archive 크기를 계산하고 GPU
+  memory profiling을 먼저 수행해야 합니다. 권장 시작값은 256×256 patch,
+  batch 1, AMP, gradient accumulation 8입니다.
 - 월별 평균은 태풍의 6시간 단위 극값을 약화시킬 수 있으므로, 월 단위 climate
   distribution과 단기 cyclone track 평가는 분리해야 합니다.
 - 실제 논문 실험에서는 persistence, climatology, WeatherNext2와 동일 split에서

@@ -4,15 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "climate-diffusion"
-version = "0.1.0"
-description = "Latent conditional Flow Matching for integrated climate data"
+version = "0.2.0"
+description = "Monthly and fixed-step latent conditional flow matching for climate data"
 requires-python = ">=3.10"
-dependencies = [
-  "numpy>=1.24",
-  "pandas>=2",
-  "torch>=2.1",
-  "xarray>=2023.1",
-]
+dependencies = ["numpy>=1.24","pandas>=2","torch>=2.1","xarray>=2023.1"]
 
 [project.optional-dependencies]
 io = ["dask[array]>=2023.1", "netCDF4>=1.6", "pyarrow>=12", "zarr>=2.16"]
@@ -20,8 +15,13 @@ test = ["pytest>=7", "scipy>=1.10"]
 
 [project.scripts]
 prepare-climate-monthly-data = "climate_diffusion.data:main"
-prepare-climate-fixed-step-data = "climate_diffusion.fixed_step_data:main"
+prepare-fixed-step-climate-flow = "climate_diffusion.fixed_step_data:main"
+prepare-era5-climate-flow = "climate_diffusion.era5:main"
+prepare-era5-streaming-flow = "climate_diffusion.era5_streaming:main"
+prepare-hres-climate-flow = "climate_diffusion.hres:main"
 train-climate-flow = "climate_diffusion.train:main"
+train-runpod-climate-flow = "climate_diffusion.runpod_train:main"
+train-runpod-fixed-step-climate-flow = "climate_diffusion.fixed_step_train:main"
 forecast-climate-flow = "climate_diffusion.inference:main"
 evaluate-climate-flow = "climate_diffusion.evaluation:main"
 
