@@ -56,7 +56,7 @@ def test_split_era5_is_canonicalised_without_changing_archive_contract(tmp_path)
         target_lon_points=4,
     )
     schema = json.loads(schema_path.read_text())
-    assert schema["source_metadata"]["adapter"] == "era5.v1"
+    assert schema["source_metadata"]["adapter"] == "era5.v2"
     assert schema["layout"] == "spatial"
     assert schema["spatial_channels"] == 3
     assert schema["grid_shape"] == [4, 4]
