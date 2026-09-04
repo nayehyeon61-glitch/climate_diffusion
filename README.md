@@ -356,44 +356,195 @@ forecast = runner.rollout(
 기존 WeatherNext2 객체는 수정하거나 덮어쓰지 않습니다. 선택 함수가 동일한
 rollout 경계에서 어느 runner를 반환할지만 결정합니다.
 
-## 6. 기존 GPT·double-loss 시스템과 연결
+## 6. P15 production 연결: fixed-step exact-360h → GPT DoubleLoss
 
-Flow Matching 출력은 xarray이므로 main system의 tokenization 단계로 전달할 수
-있습니다. `typnonn_preesure_data_loader`의 `prepare-weathernext-tokens`에서
-`--backend flow_matching`을 선택하면 frozen checkpoint를 불러오고 720시간 token
-cache를 만듭니다.
+P15 downstream은 **monthly spatial Flow와 분리된 fixed-step Flow**만 사용합니다.
+monthly spatial checkpoint는 장기 전지구 climate dynamics용이며 기본 model step이
+약 720h이므로 Day-15 endpoint source로 사용하지 않습니다.
+
+production invariant는 다음과 같습니다.
+
+```text
+monthly spatial Flow
+  → climate/background dynamics
+  → P15 endpoint로 사용하지 않음
+
+fixed-step Flow (6h 또는 24h 권장)
+  → autoregressive rollout
+  → exact forecast horizon = 360h
+  → frozen forecast token cache
+  → GPT state / GPTForecastRouter
+  → Fusion Transformer
+  → P15
+  → adaptive Q_t + survival S_t
+  → Day15–30 probabilistic forecast
+```
+
+즉 P15에 사용되는 최종 endpoint는 반드시
+
+\[
+\text{lead}_{P15}=15\times 24=360\text{ h}
+\]
+
+이어야 합니다. `forecast_step_hours`는 checkpoint가 소유하며, runner는 요청 horizon이
+checkpoint step의 양의 정수배가 아니면 실패합니다. 예를 들어 24h checkpoint는
+15-step rollout으로 360h를 생성하고, 6h checkpoint는 60-step rollout으로 360h를
+생성합니다. `forecast_step_hours=720`인 legacy/monthly checkpoint에 360h를 요청하면
+거부되는 것이 정상입니다.
+
+### 6.1 fixed-step checkpoint 준비
+
+production에서는 24h 또는 WeatherNext cadence에 가까운 6h step을 권장합니다.
+`--step-hours 360`은 중간 trajectory 없이 Day-15 endpoint 하나를 직접 학습하는
+endpoint-only ablation으로만 사용합니다.
+
+```bash
+prepare-fixed-step-climate-flow \
+  --fields data/era5_history.zarr \
+  --integrated data/integrated.parquet \
+  --variables msl t2m u10 v10 z t q u v \
+  --step-hours 24 \
+  --target-lat-points 18 --target-lon-points 36 \
+  --output data/fixed_step_24h.npz
+
+train-runpod-fixed-step-climate-flow \
+  --archive data/fixed_step_24h.npz \
+  --checkpoint-dir checkpoints/fixed_step_24h \
+  --history-steps 4 --lead-steps 1 \
+  --latent-dim 64 --hidden-dim 256 \
+  --epochs 100 --batch-size 32
+```
+
+`latest.pt`는 resume용 optimizer state를 포함하고, `best.pt`는 downstream frozen
+inference용 후보입니다. resume 시 archive의 `forecast_step_hours`와 checkpoint의
+step이 다르면 즉시 실패합니다.
+
+### 6.2 exact-360h frozen token cache
+
+`typnonn_preesure_data_loader`에서 fixed-step checkpoint를 읽어 정확히 360h까지
+rollout하고 forecast token cache를 생성합니다.
 
 ```bash
 prepare-weathernext-tokens \
   --backend flow_matching \
-  --checkpoint download/flow-matching/monthly-v1/climate-flow-monthly-v1.pt \
-  --initial-state data/era5_hres_history.zarr \
-  --storm-id TEST --init-time 2025-01-01T00:00:00Z \
+  --checkpoint checkpoints/fixed_step_24h/best.pt \
+  --initial-state data/era5_history.zarr \
+  --storm-id TEST \
+  --init-time 2025-01-01T00:00:00 \
   --storm-lat 20 --storm-lon 130 \
-  --horizon-hours 720 --max-lead-hours 720 \
-  --output-dir data/flow_matching_tokens
+  --horizon-hours 360 \
+  --max-lead-hours 360 \
+  --output-dir data/flow_360h_tokens
+```
+
+이 경로에서 Flow는 항상 inference-only입니다.
+
+```text
+model.eval()
+requires_grad_(False)
+torch.inference_mode()
+```
+
+따라서 downstream objective에 대해
+
+\[
+\nabla_{\theta_{Flow}}\mathcal L_{downstream}=0
+\]
+
+이어야 하며 Flow parameter를 GPT/Transformer optimizer에 넣지 않습니다.
+
+### 6.3 provenance 계약
+
+하나의 token directory에는 하나의 forecast provenance만 둡니다. 최소한 다음 필드를
+기록·검사합니다.
+
+```text
+forecast_backend = flow_matching
+forecast_checkpoint
+forecast_checkpoint_sha256
+forecast_checkpoint_format
+forecast_step_hours = 6 or 24
+forecast_horizon_hours = 360
+endpoint_lead_hours = 360
+schema / variable order / grid contract
+initialization mode
+tokenizer fingerprint
+```
+
+특히 `forecast_horizon_hours != 360`인 cache는 P15 training에 사용할 수 없습니다.
+monthly 720h token, WeatherNext token, fixed-step Flow token은 같은 cache directory에
+섞지 않습니다.
+
+### 6.4 storm split + GPT state + downstream training
+
+forecast token을 만든 뒤 먼저 storm-level split을 고정하고 GPT state를 cache합니다.
+같은 `storm_id`가 train/validation/test 두 곳 이상에 나타나면 leakage이므로 학습을
+중단해야 합니다.
+
+```bash
+build-storm-split \
+  --integrated data/integrated.parquet \
+  --output data/storm_split.csv
+
+export OPENAI_API_KEY='...'
+build-gpt-state-cache \
+  --integrated data/integrated.parquet \
+  --output-dir data/gpt_states \
+  --on-error mask
 
 train-weathernext-transformer \
   --integrated data/integrated.parquet \
   --distribution data/distribution/spatial_distribution.csv \
-  --weathernext-token-dir data/flow_matching_tokens \
-  --require-checkpoint-kind flow_matching
+  --split-manifest data/storm_split.csv \
+  --weathernext-token-dir data/flow_360h_tokens \
+  --gpt-state-dir data/gpt_states \
+  --require-forecast-backend flow_matching \
+  --require-valid-gpt-states \
+  --distribution-weight 1.0 \
+  --track-weight 1.0 \
+  --survival-weight 1.0 \
+  --output checkpoints/gpt_double_loss.pt
 ```
 
-이 경로에서는 Flow parameter를 optimizer에 넣지 않습니다. 후단의 GPT state,
-GRU/Transformer와 distribution CE + track MSE double loss만 학습됩니다.
+trainer는 token provenance가 정확히 Day 15 = 360h인지 검사하고, dataset에서도
+`require_endpoint_lead_hours=360`으로 endpoint를 다시 검사합니다. 따라서 잘못된
+lead token이 cache에 남아 있어도 P15 anchor로 조용히 사용되지 않습니다.
 
-권장 실험군:
+### 6.5 Q_t / survival 해석
 
-| 실험 | Frozen forecast source | 후단 학습 |
-|---|---|---|
-| A | 공식 WeatherNext2 | GPT-FiLM + GRU + Transformer + double loss |
-| B | fine-tuned WeatherNext2 | 동일 |
-| C | monthly latent flow matching | 동일 |
+Day15–30 분포는 storm existence와 conditional location을 분리합니다.
 
-이렇게 구성하면 novelty는 단순히 강한 모델을 제거하는 데 있지 않고,
-`월 단위 생성적 operator + GPT-conditioned 태풍 history + distribution/track dual
-objective`의 결합과 세 실험군의 정량 비교에서 형성됩니다.
+\[
+P_t(x)=S_tQ_t(x),
+\]
+
+여기서 `S_t`는 해당 lead까지 태풍이 존재할 survival probability이고, `Q_t(x)`는
+태풍이 존재한다는 조건에서의 위치 분포입니다. sampling은 autograd 밖에서 수행하고,
+태풍이 소멸한 sample은 실제 격자 위치를 강제로 할당하지 않고 `cell_index=-1`로
+표현합니다.
+
+후단 loss는 개념적으로
+
+\[
+\mathcal L=
+\lambda_{dist}\mathcal L_{distribution}
++\lambda_{track}\mathcal L_{track}
++\lambda_{survival}\mathcal L_{survival}
+\]
+
+로 구성됩니다.
+
+### 6.6 권장 비교 실험
+
+| 실험 | Frozen forecast source | P15 endpoint | 후단 학습 |
+|---|---|---:|---|
+| A | 공식 WeatherNext2 | exact 360h | GPT Router + Transformer + Q_t/survival |
+| B | fine-tuned WeatherNext2 | exact 360h | 동일 |
+| C | fixed-step Flow Matching | exact 360h | 동일 |
+| D | monthly spatial Flow | P15 비교에서 제외 | climate/background ablation |
+
+따라서 논문의 downstream 비교에서는 forecast source만 바꾸고 P15 endpoint, storm
+split, GPT cache 정책, loss와 evaluation protocol은 동일하게 유지합니다.
 
 ## 현재 범위와 주의점
 
