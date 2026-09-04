@@ -211,15 +211,19 @@ def _blend_window(
 
 def tiled_apply(
     history: torch.Tensor,
-    predict: Callable[[torch.Tensor], torch.Tensor],
+    predict: Callable[[torch.Tensor, int, int], torch.Tensor],
     *,
     tile_size: tuple[int, int],
     overlap: int,
 ) -> torch.Tensor:
     """Apply a patch predictor and blend it into a seam-safe global field.
 
-    ``history`` is ``[B, T, C, H, W]`` and ``predict`` returns ``[B, C, h, w]``.
-    Longitude tiles wrap around the dateline; latitude tiles stop at the poles.
+    ``history`` is ``[B, T, C, H, W]`` and ``predict`` takes the patch plus its
+    ``(latitude, longitude)`` origin on the global grid and returns
+    ``[B, C, h, w]``. The origin lets a caller keep a tile's randomness tied to
+    where it sits, so overlapping tiles agree instead of blending independent
+    draws. Longitude tiles wrap around the dateline; latitude tiles stop at the
+    poles.
     """
 
     if history.ndim != 5:
@@ -243,7 +247,7 @@ def tiled_apply(
                 lon_start, lon_start + tile_width, device=history.device
             ).remainder(width)
             patch = history.index_select(-2, lat_index).index_select(-1, lon_index)
-            prediction = predict(patch)
+            prediction = predict(patch, lat_start, lon_start)
             if prediction.shape[-2:] != (tile_height, tile_width):
                 raise ValueError("Patch predictor changed the requested tile shape")
             for local_lon, global_lon in enumerate(lon_index.tolist()):

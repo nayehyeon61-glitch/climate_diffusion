@@ -207,6 +207,15 @@ class MonthlyLatentFlow(nn.Module):
         if self.is_spatial:
             set_longitude_wrap(self, width == self.config.grid_width)
 
+    def _latent_extent(self, size: int) -> int:
+        """Latent rows/columns the encoder produces for a spatial extent.
+
+        Each downsample level is a stride-2 padded convolution, which rounds up.
+        """
+        for _ in range(self.config.spatial_downsample_levels):
+            size = -(-size // 2)
+        return size
+
     def _draw_flow_pair(
         self,
         target_latent: torch.Tensor,
@@ -329,6 +338,7 @@ class MonthlyLatentFlow(nn.Module):
         integration_steps: int = 32,
         generator: torch.Generator | None = None,
         history_auxiliary: torch.Tensor | None = None,
+        noise: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if integration_steps < 1:
             raise ValueError("integration_steps must be positive")
@@ -350,12 +360,21 @@ class MonthlyLatentFlow(nn.Module):
             history_latents = self.autoencoder.encode(history)
             condition = self.vector_field.encode_condition(history_latents)
             latent_shape = (history.shape[0], self.config.latent_dim)
-        latent = torch.randn(
-            *latent_shape,
-            device=history.device,
-            dtype=history.dtype,
-            generator=generator,
-        )
+        if noise is None:
+            latent = torch.randn(
+                *latent_shape,
+                device=history.device,
+                dtype=history.dtype,
+                generator=generator,
+            )
+        else:
+            if tuple(noise.shape) != tuple(latent_shape):
+                raise ValueError(
+                    f"Expected noise shape {tuple(latent_shape)}, "
+                    f"received {tuple(noise.shape)}"
+                )
+            latent = noise.to(device=history.device, dtype=history.dtype)
+        require_finite_tensor(latent, "flow sampling initial latent")
         step = 1.0 / integration_steps
         for index in range(integration_steps):
             time = torch.full(
@@ -391,13 +410,38 @@ class MonthlyLatentFlow(nn.Module):
     ) -> torch.Tensor:
         if not self.is_spatial:
             raise ValueError("Tiled sampling is only available for spatial backends")
+        height, width = history.shape[-2:]
+        factor = 2**self.config.spatial_downsample_levels
+        # One noise field for the whole globe, sliced per tile. Drawing per tile
+        # instead would make each ensemble member a mosaic of independent
+        # samples, and the overlap blend would average them and flatten the
+        # spread exactly where tiles meet.
+        latent_height, latent_width = self._latent_extent(height), self._latent_extent(width)
+        global_noise = torch.randn(
+            history.shape[0],
+            self.config.spatial_latent_channels,
+            latent_height,
+            latent_width,
+            device=history.device,
+            dtype=history.dtype,
+            generator=generator,
+        )
 
-        def predict(patch: torch.Tensor) -> torch.Tensor:
+        def predict(patch: torch.Tensor, lat_start: int, lon_start: int) -> torch.Tensor:
+            rows = self._latent_extent(patch.shape[-2])
+            columns = self._latent_extent(patch.shape[-1])
+            # Latitude cannot wrap, so keep the slice inside the noise field.
+            top = min(lat_start // factor, latent_height - rows)
+            row_index = torch.arange(top, top + rows, device=history.device)
+            column_index = torch.arange(
+                lon_start // factor, lon_start // factor + columns, device=history.device
+            ).remainder(latent_width)
+            noise = global_noise.index_select(-2, row_index).index_select(-1, column_index)
             return self.sample(
                 patch,
                 integration_steps=integration_steps,
-                generator=generator,
                 history_auxiliary=history_auxiliary,
+                noise=noise,
             )
 
         return tiled_apply(history, predict, tile_size=tile_size, overlap=overlap)
