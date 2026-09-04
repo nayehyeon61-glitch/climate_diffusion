@@ -7,12 +7,7 @@ name = "climate-diffusion"
 version = "0.2.0"
 description = "Monthly latent conditional flow matching for integrated climate data"
 requires-python = ">=3.10"
-dependencies = [
-  "numpy>=1.24",
-  "pandas>=2",
-  "torch>=2.1",
-  "xarray>=2023.1",
-]
+dependencies = ["numpy>=1.24","pandas>=2","torch>=2.1","xarray>=2023.1"]
 
 [project.optional-dependencies]
 io = ["dask[array]>=2023.1", "netCDF4>=1.6", "pyarrow>=12", "zarr>=2.16"]
@@ -20,6 +15,7 @@ test = ["pytest>=7", "scipy>=1.10"]
 
 [project.scripts]
 prepare-climate-monthly-data = "climate_diffusion.data:main"
+prepare-fixed-step-climate-flow = "climate_diffusion.fixed_step_data:main"
 prepare-era5-climate-flow = "climate_diffusion.era5:main"
 prepare-era5-streaming-flow = "climate_diffusion.era5_streaming:main"
 prepare-hres-climate-flow = "climate_diffusion.hres:main"
