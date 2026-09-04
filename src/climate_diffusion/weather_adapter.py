@@ -10,7 +10,7 @@ from .inference import LatentFlowForecaster
 
 
 def _vectorize_fixed_step(dataset: xr.Dataset, schema: dict[str, object]) -> np.ndarray:
-    """Vectorize exact fixed-step snapshots using their checkpoint schema."""
+    """Vectorize legacy/minimal fixed-step snapshots using their checkpoint schema."""
     vectors=[]
     for time_index in range(dataset.sizes["time"]):
         state=np.full(int(schema["state_dim"]),np.nan,dtype=np.float32)
@@ -71,7 +71,7 @@ class FlowMatchingWeatherRunner:
         if spatial:
             vectors=spatialize_dataset(state,self.forecaster.schema)
             auxiliary=auxiliary_from_dataset(state,self.forecaster.schema,self.forecaster.auxiliary_mean.detach().cpu().numpy())
-        elif fixed:
+        elif fixed and "field_dim" not in self.forecaster.schema:
             vectors=_vectorize_fixed_step(state,self.forecaster.schema)
             auxiliary=None
         else:
