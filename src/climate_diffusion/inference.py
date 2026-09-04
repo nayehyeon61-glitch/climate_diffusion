@@ -1,4 +1,4 @@
-"""Load and sample trained monthly latent flow checkpoints."""
+"""Load and sample trained latent Flow Matching checkpoints."""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ from .config import FlowModelConfig
 from .data import load_auxiliary_states, load_monthly_archive
 from .model import MonthlyLatentFlow
 from .validation import require_finite_numpy, require_finite_tensor, require_no_inf_numpy
+
+LEGACY_MONTHLY_STEP_HOURS = 30 * 24
 
 
 class LatentFlowForecaster:
@@ -33,6 +35,7 @@ class LatentFlowForecaster:
             "climate_diffusion.monthly_latent_flow.v1",
             "climate_diffusion.monthly_latent_flow.v2",
             "climate_diffusion.monthly_latent_flow.v3",
+            "climate_diffusion.latent_flow.v3",
         }:
             raise ValueError("Unsupported climate flow checkpoint format")
         self.config = FlowModelConfig(**payload["model_config"])
@@ -56,6 +59,14 @@ class LatentFlowForecaster:
         self.schema = payload["schema"]
         self.training_metadata = payload.get("training", {})
         self.checkpoint_format = str(payload["format"])
+        self.forecast_step_hours = int(
+            self.training_metadata.get(
+                "forecast_step_hours",
+                self.schema.get("forecast_step_hours", LEGACY_MONTHLY_STEP_HOURS),
+            )
+        )
+        if self.forecast_step_hours <= 0:
+            raise ValueError("Flow checkpoint forecast_step_hours must be positive")
         self.checkpoint_sha256 = self._verify_manifest()
 
     def _verify_manifest(self) -> str:
@@ -72,6 +83,9 @@ class LatentFlowForecaster:
                 raise ValueError(
                     f"Checkpoint checksum mismatch for {self.checkpoint_path}"
                 )
+            manifest_step = manifest.get("forecast_step_hours")
+            if manifest_step is not None and int(manifest_step) != self.forecast_step_hours:
+                raise ValueError("Flow manifest/checkpoint forecast-step mismatch")
         return digest
 
     def _normalise(self, values: np.ndarray) -> torch.Tensor:
@@ -139,12 +153,8 @@ class LatentFlowForecaster:
                 )
             if bool(torch.isinf(auxiliary).any()):
                 raise ValueError("Forecast auxiliary history contains Inf")
-            auxiliary = torch.where(
-                torch.isfinite(auxiliary), auxiliary, self.auxiliary_mean
-            )
-            normalized_auxiliary = (
-                auxiliary - self.auxiliary_mean
-            ) / self.auxiliary_scale
+            auxiliary = torch.where(torch.isfinite(auxiliary), auxiliary, self.auxiliary_mean)
+            normalized_auxiliary = (auxiliary - self.auxiliary_mean) / self.auxiliary_scale
             require_finite_tensor(normalized_auxiliary, "normalized forecast auxiliary")
         if self.config.backend != "vector_mlp" and tile_size is None:
             stored = self.training_metadata.get("patch_size")
@@ -154,16 +164,12 @@ class LatentFlowForecaster:
         outputs = []
         for member in range(ensemble_size):
             member_history = normalized.clone()
-            member_auxiliary = (
-                None if normalized_auxiliary is None else normalized_auxiliary.clone()
-            )
+            member_auxiliary = None if normalized_auxiliary is None else normalized_auxiliary.clone()
             generator = torch.Generator(device=self.device).manual_seed(seed + member)
             member_outputs = []
             for _ in range(months):
                 model_history = member_history.unsqueeze(0)
-                model_auxiliary = (
-                    None if member_auxiliary is None else member_auxiliary.unsqueeze(0)
-                )
+                model_auxiliary = None if member_auxiliary is None else member_auxiliary.unsqueeze(0)
                 if self.config.backend != "vector_mlp" and tile_size is not None and (
                     tile_size[0] < self.config.grid_height
                     or tile_size[1] < self.config.grid_width
@@ -184,11 +190,8 @@ class LatentFlowForecaster:
                         history_auxiliary=model_auxiliary,
                     )[0]
                 member_outputs.append(prediction)
-                member_history = torch.cat(
-                    (member_history[1:], prediction.unsqueeze(0)), dim=0
-                )
+                member_history = torch.cat((member_history[1:], prediction.unsqueeze(0)), dim=0)
                 if member_auxiliary is not None:
-                    # Future scalar conditions are unknown; persistence is explicit and neutral.
                     member_auxiliary = torch.cat(
                         (member_auxiliary[1:], member_auxiliary[-1:]), dim=0
                     )
@@ -197,10 +200,10 @@ class LatentFlowForecaster:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Sample a monthly climate flow model")
+    parser = argparse.ArgumentParser(description="Sample a trained climate flow model")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--archive", required=True, help="Archive providing latest history")
-    parser.add_argument("--months", type=int, default=1)
+    parser.add_argument("--months", type=int, default=1, help="Number of model forecast steps")
     parser.add_argument("--ensemble-size", type=int, default=1)
     parser.add_argument("--integration-steps", type=int, default=32)
     parser.add_argument("--seed", type=int, default=0)
@@ -211,10 +214,8 @@ def main(argv: list[str] | None = None) -> int:
     forecaster = LatentFlowForecaster(args.checkpoint)
     history = states[-forecaster.config.history_months :]
     auxiliary = load_auxiliary_states(args.archive, schema)
-    auxiliary_history = (
-        None
-        if auxiliary is None
-        else np.asarray(auxiliary[-forecaster.config.history_months :])
+    auxiliary_history = None if auxiliary is None else np.asarray(
+        auxiliary[-forecaster.config.history_months :]
     )
     predictions = forecaster.forecast(
         history,
@@ -231,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
         predictions=predictions,
         last_history_time=times[-1],
         checkpoint=str(forecaster.checkpoint_path),
+        forecast_step_hours=np.asarray(forecaster.forecast_step_hours, dtype=np.int64),
     )
     print(output)
     return 0
