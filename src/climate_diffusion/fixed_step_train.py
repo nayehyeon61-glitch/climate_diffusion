@@ -130,7 +130,7 @@ def train_runpod_fixed_step_flow(
         start_epoch=int(saved["epoch"])+1; best_loss=float(saved["best_validation_loss"]); best_epoch=int(saved["best_epoch"])
     for epoch in range(start_epoch,epochs+1):
         train_metrics=_epoch(model,train_loader,loss_config,device,optimizer)
-        val_metrics=_epoch(model,val_loader,loss_config,device,optimizer=None)
+        val_metrics=_epoch(model,val_loader,loss_config,device,optimizer=None,eval_seed=seed)
         improved=val_metrics["loss"]<best_loss
         if improved: best_loss=float(val_metrics["loss"]); best_epoch=epoch
         payload={
