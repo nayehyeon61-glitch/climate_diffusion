@@ -5,9 +5,24 @@ import pandas as pd
 import xarray as xr
 
 from climate_diffusion.fixed_step_data import prepare_fixed_step_archive
+from climate_diffusion.fixed_step_train import train_runpod_fixed_step_flow
 from climate_diffusion.inference import LatentFlowForecaster
-from climate_diffusion.train import train_flow_model
 from climate_diffusion.weather_adapter import FlowMatchingWeatherRunner
+
+
+def _train_fixed(archive, root, *, history_steps=3, batch_size=2):
+    return train_runpod_fixed_step_flow(
+        archive,
+        root,
+        history_steps=history_steps,
+        latent_dim=2,
+        hidden_dim=8,
+        epochs=1,
+        batch_size=batch_size,
+        validation_fraction=0.15,
+        test_fraction=0.15,
+        purge_windows=1,
+    )
 
 
 def test_fixed_step_360h_checkpoint_rolls_out_exact_day15_endpoint(tmp_path):
@@ -34,21 +49,9 @@ def test_fixed_step_360h_checkpoint_rolls_out_exact_day15_endpoint(tmp_path):
     assert schema["forecast_step_hours"] == 360
     assert schema["aggregation"] == "exact_fixed_step_snapshot"
 
-    checkpoint = train_flow_model(
-        archive,
-        tmp_path / "flow360.pt",
-        history_months=3,
-        latent_dim=2,
-        hidden_dim=8,
-        epochs=1,
-        batch_size=2,
-        validation_fraction=0.2,
-        test_fraction=0.1,
-        purge_windows=1,
-    )
-    metadata = json.loads(checkpoint.with_suffix(".metadata.json").read_text())
-    assert metadata["forecast_step_hours"] == 360
-    assert metadata["checkpoint_kind"] == "fixed_step_latent_flow_matching"
+    checkpoint = _train_fixed(archive, tmp_path / "flow360")
+    manifest = json.loads((checkpoint.parent / "best.manifest.json").read_text())
+    assert manifest["forecast_step_hours"] == 360
 
     forecaster = LatentFlowForecaster(checkpoint, device="cpu")
     assert forecaster.forecast_step_hours == 360
@@ -84,11 +87,7 @@ def test_24h_flow_checkpoint_produces_full_0_to_360h_trajectory(tmp_path):
         path, tmp_path / "daily.npz", step_hours=24,
         target_lat_points=1, target_lon_points=2,
     )
-    checkpoint = train_flow_model(
-        archive, tmp_path / "flow24.pt", history_months=3, latent_dim=2,
-        hidden_dim=8, epochs=1, batch_size=4,
-        validation_fraction=0.15, test_fraction=0.1, purge_windows=1,
-    )
+    checkpoint = _train_fixed(archive, tmp_path / "flow24", batch_size=4)
     runner = FlowMatchingWeatherRunner(checkpoint, integration_steps=1, device="cpu")
     initial = fields.isel(time=slice(-3, None))
     init_time = pd.Timestamp(initial.time.values[-1])
@@ -116,11 +115,7 @@ def test_360h_checkpoint_rejects_incompatible_fraction(tmp_path):
         fields_path, tmp_path / "fixed.npz", step_hours=360,
         target_lat_points=1, target_lon_points=1,
     )
-    checkpoint = train_flow_model(
-        archive, tmp_path / "flow.pt", history_months=3, latent_dim=2,
-        hidden_dim=8, epochs=1, batch_size=2,
-        validation_fraction=0.2, test_fraction=0.1, purge_windows=1,
-    )
+    checkpoint = _train_fixed(archive, tmp_path / "flow")
     runner = FlowMatchingWeatherRunner(checkpoint, integration_steps=2, device="cpu")
     try:
         runner.rollout(fields.isel(time=slice(-3, None)), horizon_hours=540)
