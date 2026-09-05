@@ -18,6 +18,7 @@ from .data import (
     load_auxiliary_states,
     load_monthly_archive,
     load_observation_mask,
+    load_observed_fraction,
 )
 from .evaluation import weighted_rmse
 from .model import MonthlyLatentFlow
@@ -437,6 +438,7 @@ def train_flow_model(
     if gradient_accumulation_steps < 1:
         raise ValueError("gradient_accumulation_steps must be positive")
     observation_mask = load_observation_mask(archive_path, states, schema)
+    observed_fraction = load_observed_fraction(archive_path, states, schema)
     if layout == "spatial":
         state_mean, state_scale = _train_only_statistics(
             states,
@@ -498,6 +500,7 @@ def train_flow_model(
         auxiliary_mean=auxiliary_mean,
         auxiliary_scale=auxiliary_scale,
         patch_size=patch_size,
+        observed_fraction=observed_fraction,
         random_crop=layout == "spatial",
     )
     validation_dataset = MonthlyWindowDataset(
@@ -514,6 +517,7 @@ def train_flow_model(
         auxiliary_mean=auxiliary_mean,
         auxiliary_scale=auxiliary_scale,
         patch_size=patch_size,
+        observed_fraction=observed_fraction,
         random_crop=False,
     )
     generator = torch.Generator().manual_seed(seed)
