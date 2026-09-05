@@ -231,6 +231,7 @@ def finalize_era5_streaming_archive(
         "aggregation": "calendar_month_mean_available_next_month",
         "missing_value_policy": "preserve_nan_impute_from_train_only",
         "infinity_policy": "fail_fast",
+        "inf_checked": True,
         "target_lat_points": first["target_lat_points"],
         "target_lon_points": first["target_lon_points"],
     }

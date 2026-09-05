@@ -21,6 +21,7 @@ from .data import (
     load_auxiliary_states,
     load_monthly_archive,
     load_observation_mask,
+    load_observed_fraction,
 )
 from .model import MonthlyLatentFlow
 from .train import (
@@ -212,6 +213,7 @@ def train_runpod_spatial_flow(
     train_start, train_end = split.raw_month_ranges["train"]
     train_raw_indices = list(range(train_start, train_end))
     observation_mask = load_observation_mask(archive, states, schema)
+    observed_fraction = load_observed_fraction(archive, states, schema)
     state_mean, state_scale = _train_only_statistics(
         states,
         train_raw_indices,
@@ -258,6 +260,7 @@ def train_runpod_spatial_flow(
         auxiliary_mean=auxiliary_mean,
         auxiliary_scale=auxiliary_scale,
         patch_size=patch_size,
+        observed_fraction=observed_fraction,
         random_crop=True,
     )
     validation_dataset = MonthlyWindowDataset(
@@ -274,6 +277,7 @@ def train_runpod_spatial_flow(
         auxiliary_mean=auxiliary_mean,
         auxiliary_scale=auxiliary_scale,
         patch_size=patch_size,
+        observed_fraction=observed_fraction,
         random_crop=False,
     )
     loader_generator = torch.Generator().manual_seed(seed)
