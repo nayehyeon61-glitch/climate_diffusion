@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from .config import FlowModelConfig
-from .data import load_auxiliary_states, load_monthly_archive
+from .data import load_auxiliary_states, load_monthly_archive, positional_grid
 from .model import MonthlyLatentFlow
 from .validation import require_finite_numpy, require_finite_tensor, require_no_inf_numpy
 LEGACY_MONTHLY_STEP_HOURS=30*24
@@ -23,7 +23,13 @@ class LatentFlowForecaster:
         self.state_mean=payload["state_mean"].to(self.device); self.state_scale=payload["state_scale"].to(self.device); self.auxiliary_mean=payload.get("auxiliary_mean",torch.empty(0)).to(self.device); self.auxiliary_scale=payload.get("auxiliary_scale",torch.empty(0)).to(self.device)
         for value,name in ((self.state_mean,"checkpoint state_mean"),(self.state_scale,"checkpoint state_scale"),(self.auxiliary_mean,"checkpoint auxiliary_mean"),(self.auxiliary_scale,"checkpoint auxiliary_scale")): require_finite_tensor(value,name)
         if bool((self.state_scale<=0).any()) or bool((self.auxiliary_scale<=0).any()): raise ValueError("Checkpoint normalization scales must be positive")
-        self.schema=payload["schema"]; self.training_metadata=payload.get("training",{}); self.checkpoint_format=str(payload["format"])
+        self.schema=payload["schema"]
+        self.coordinates=None
+        if self.config.positional_channels:
+            planes=positional_grid(self.schema)
+            if planes is None: raise ValueError("Checkpoint encodes positional channels but its schema has no grid")
+            self.coordinates=torch.as_tensor(planes,dtype=torch.float32,device=self.device).unsqueeze(0)
+        self.training_metadata=payload.get("training",{}); self.checkpoint_format=str(payload["format"])
         self.forecast_step_hours=int(self.training_metadata.get("forecast_step_hours",self.schema.get("forecast_step_hours",LEGACY_MONTHLY_STEP_HOURS)))
         if self.forecast_step_hours<=0: raise ValueError("Flow checkpoint forecast_step_hours must be positive")
         self.checkpoint_sha256=self._verify_manifest()
@@ -63,8 +69,8 @@ class LatentFlowForecaster:
             member_history=normalized.clone(); member_aux=None if normalized_auxiliary is None else normalized_auxiliary.clone(); gen=torch.Generator(device=self.device).manual_seed(seed+member); member_outputs=[]
             for _ in range(months):
                 mh=member_history.unsqueeze(0); ma=None if member_aux is None else member_aux.unsqueeze(0)
-                if self.config.backend!="vector_mlp" and tile_size is not None and (tile_size[0]<self.config.grid_height or tile_size[1]<self.config.grid_width): prediction=self.model.sample_tiled(mh,tile_size=tile_size,overlap=tile_overlap,integration_steps=integration_steps,generator=gen,history_auxiliary=ma)[0]
-                else: prediction=self.model.sample(mh,integration_steps=integration_steps,generator=gen,history_auxiliary=ma)[0]
+                if self.config.backend!="vector_mlp" and tile_size is not None and (tile_size[0]<self.config.grid_height or tile_size[1]<self.config.grid_width): prediction=self.model.sample_tiled(mh,tile_size=tile_size,overlap=tile_overlap,integration_steps=integration_steps,generator=gen,history_auxiliary=ma,coordinates=self.coordinates)[0]
+                else: prediction=self.model.sample(mh,integration_steps=integration_steps,generator=gen,history_auxiliary=ma,coordinates=self.coordinates)[0]
                 member_outputs.append(prediction); member_history=torch.cat((member_history[1:],prediction.unsqueeze(0)),dim=0)
                 if member_aux is not None: member_aux=torch.cat((member_aux[1:],member_aux[-1:]),dim=0)
             outputs.append(torch.stack(member_outputs))

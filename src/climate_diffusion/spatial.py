@@ -126,11 +126,16 @@ class SpatialAutoencoder(nn.Module):
         *,
         operator_modes: tuple[int, int] | None = None,
         gradient_checkpointing: bool = False,
+        input_channels: int | None = None,
     ) -> None:
         super().__init__()
         self.downsample_levels = downsample_levels
         self.gradient_checkpointing = gradient_checkpointing
-        self.input_projection = PeriodicConv2d(channels, base_channels)
+        # The encoder may read extra static planes (coordinates) that the
+        # decoder does not reconstruct, so the two ends can differ.
+        self.input_projection = PeriodicConv2d(
+            channels if input_channels is None else input_channels, base_channels
+        )
         encoder = []
         current = base_channels
         for _ in range(downsample_levels):
@@ -232,7 +237,10 @@ def tiled_apply(
     tile_height, tile_width = tile_size
     lat_starts = tile_starts(height, tile_height, overlap)
     lon_starts = tile_starts(width, tile_width, overlap, periodic=True)
-    result = history.new_zeros((history.shape[0], history.shape[2], height, width))
+    # The predictor may return fewer channels than it was given -- a caller can
+    # pass static planes it does not reconstruct -- so size the canvas from the
+    # first prediction rather than from the input.
+    result: torch.Tensor | None = None
     weights = history.new_zeros((1, 1, height, width))
     window = _blend_window(
         tile_height,
@@ -250,6 +258,10 @@ def tiled_apply(
             prediction = predict(patch, lat_start, lon_start)
             if prediction.shape[-2:] != (tile_height, tile_width):
                 raise ValueError("Patch predictor changed the requested tile shape")
+            if result is None:
+                result = history.new_zeros(
+                    (history.shape[0], prediction.shape[1], height, width)
+                )
             for local_lon, global_lon in enumerate(lon_index.tolist()):
                 result[:, :, lat_start : lat_start + tile_height, global_lon] += (
                     prediction[:, :, :, local_lon] * window[:, :, :, local_lon]
@@ -257,6 +269,6 @@ def tiled_apply(
                 weights[:, :, lat_start : lat_start + tile_height, global_lon] += window[
                     :, :, :, local_lon
                 ]
-    if torch.any(weights == 0):
+    if result is None or torch.any(weights == 0):
         raise RuntimeError("Tile configuration left uncovered grid cells")
     return result / weights

@@ -195,6 +195,7 @@ class MonthlyLatentFlow(nn.Module):
                 config.spatial_downsample_levels,
                 operator_modes=modes,
                 gradient_checkpointing=config.gradient_checkpointing,
+                input_channels=config.encoder_input_channels,
             )
             self.vector_field = SpatialConditionalVectorField(config)
 
@@ -206,6 +207,29 @@ class MonthlyLatentFlow(nn.Module):
         """Wrap longitude only when the input actually spans the whole grid."""
         if self.is_spatial:
             set_longitude_wrap(self, width == self.config.grid_width)
+
+    def _with_coordinates(
+        self, values: torch.Tensor, coordinates: torch.Tensor | None
+    ) -> torch.Tensor:
+        """Append the static coordinate planes the encoder expects."""
+        if not self.config.positional_channels:
+            return values
+        if coordinates is None:
+            raise ValueError(
+                "This checkpoint encodes positional channels; coordinates are required"
+            )
+        if coordinates.shape[-3] != self.config.positional_channels:
+            raise ValueError(
+                f"Expected {self.config.positional_channels} positional channels, "
+                f"received {coordinates.shape[-3]}"
+            )
+        if coordinates.shape[-2:] != values.shape[-2:]:
+            raise ValueError(
+                f"Coordinates cover {tuple(coordinates.shape[-2:])} but the field is "
+                f"{tuple(values.shape[-2:])}"
+            )
+        expanded = coordinates.expand(values.shape[0], -1, -1, -1)
+        return torch.cat((values, expanded), dim=1)
 
     def _latent_extent(self, size: int) -> int:
         """Latent rows/columns the encoder produces for a spatial extent.
@@ -254,6 +278,7 @@ class MonthlyLatentFlow(nn.Module):
         target_mask: torch.Tensor | None = None,
         *,
         generator: torch.Generator | None = None,
+        coordinates: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         config = config or FlowLossConfig()
         require_finite_tensor(history, "flow loss history input")
@@ -267,12 +292,16 @@ class MonthlyLatentFlow(nn.Module):
             self._configure_longitude_wrap(target.shape[-1])
             batch, months, channels, height, width = history.shape
             encoded_history = self.autoencoder.encode(
-                history.reshape(batch * months, channels, height, width)
+                self._with_coordinates(
+                    history.reshape(batch * months, channels, height, width), coordinates
+                )
             )
             history_latents = encoded_history.reshape(
                 batch, months, *encoded_history.shape[1:]
             )
-            target_latent = self.autoencoder.encode(target)
+            target_latent = self.autoencoder.encode(
+                self._with_coordinates(target, coordinates)
+            )
             reconstruction = self.autoencoder.decode(target_latent, target.shape[-2:])
             time_shape = (batch_size, 1, 1, 1)
         else:
@@ -339,6 +368,7 @@ class MonthlyLatentFlow(nn.Module):
         generator: torch.Generator | None = None,
         history_auxiliary: torch.Tensor | None = None,
         noise: torch.Tensor | None = None,
+        coordinates: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if integration_steps < 1:
             raise ValueError("integration_steps must be positive")
@@ -349,7 +379,9 @@ class MonthlyLatentFlow(nn.Module):
             self._configure_longitude_wrap(history.shape[-1])
             batch, months, channels, height, width = history.shape
             encoded_history = self.autoencoder.encode(
-                history.reshape(batch * months, channels, height, width)
+                self._with_coordinates(
+                    history.reshape(batch * months, channels, height, width), coordinates
+                )
             )
             history_latents = encoded_history.reshape(
                 batch, months, *encoded_history.shape[1:]
@@ -407,6 +439,7 @@ class MonthlyLatentFlow(nn.Module):
         integration_steps: int = 32,
         generator: torch.Generator | None = None,
         history_auxiliary: torch.Tensor | None = None,
+        coordinates: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if not self.is_spatial:
             raise ValueError("Tiled sampling is only available for spatial backends")
@@ -427,7 +460,21 @@ class MonthlyLatentFlow(nn.Module):
             generator=generator,
         )
 
+        data_channels = history.shape[2]
+        if coordinates is not None:
+            # Ride along as extra history channels so tiled_apply's own cropping
+            # slices the coordinate planes exactly like the data.
+            planes = coordinates.expand(history.shape[0], -1, -1, -1)
+            history = torch.cat(
+                (history, planes.unsqueeze(1).expand(-1, history.shape[1], -1, -1, -1)),
+                dim=2,
+            )
+
         def predict(patch: torch.Tensor, lat_start: int, lon_start: int) -> torch.Tensor:
+            tile_coordinates = None
+            if coordinates is not None:
+                tile_coordinates = patch[:, 0, data_channels:]
+                patch = patch[:, :, :data_channels]
             rows = self._latent_extent(patch.shape[-2])
             columns = self._latent_extent(patch.shape[-1])
             # Latitude cannot wrap, so keep the slice inside the noise field.
@@ -442,6 +489,7 @@ class MonthlyLatentFlow(nn.Module):
                 integration_steps=integration_steps,
                 history_auxiliary=history_auxiliary,
                 noise=noise,
+                coordinates=tile_coordinates,
             )
 
         return tiled_apply(history, predict, tile_size=tile_size, overlap=overlap)

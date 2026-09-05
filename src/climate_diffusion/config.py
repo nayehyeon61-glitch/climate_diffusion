@@ -25,6 +25,13 @@ class FlowModelConfig:
     operator_modes_lon: int = 24
     auxiliary_dim: int = 0
     gradient_checkpointing: bool = False
+    # Static sin(lat)/cos(lon)/sin(lon) planes appended to the encoder input.
+    # Defaults to 0 so checkpoints written before they existed still load.
+    positional_channels: int = 0
+
+    @property
+    def encoder_input_channels(self) -> int:
+        return self.spatial_channels + self.positional_channels
 
     def __post_init__(self) -> None:
         if self.backend not in {"vector_mlp", "spatial_conv", "spatial_operator"}:
@@ -39,6 +46,8 @@ class FlowModelConfig:
             raise ValueError("All model dimensions must be positive")
         if self.auxiliary_dim < 0:
             raise ValueError("auxiliary_dim cannot be negative")
+        if self.positional_channels not in {0, 3}:
+            raise ValueError("positional_channels must be 0 or 3")
         if self.backend != "vector_mlp":
             if min(
                 self.spatial_channels,
