@@ -18,7 +18,10 @@ from .data import (
     load_auxiliary_states,
     load_monthly_archive,
     load_observation_mask,
+    load_observed_fraction,
+    positional_grid,
 )
+from .evaluation import weighted_rmse
 from .model import MonthlyLatentFlow
 from .validation import (
     archive_contract_fingerprint,
@@ -145,11 +148,13 @@ def _epoch(
     mixed_precision: bool = False,
     gradient_accumulation_steps: int = 1,
     scaler: torch.amp.GradScaler | None = None,
+    eval_seed: int | None = None,
 ) -> dict[str, float]:
     training = optimizer is not None
     model.train(training)
     totals: dict[str, float] = {}
     batches = 0
+    overflow_steps = 0
     context = torch.enable_grad() if training else torch.no_grad()
     if training:
         optimizer.zero_grad(set_to_none=True)
@@ -163,6 +168,17 @@ def _epoch(
             history_auxiliary = batch.get("history_auxiliary")
             if history_auxiliary is not None:
                 history_auxiliary = history_auxiliary.to(device)
+            coordinates = batch.get("coordinates")
+            if coordinates is not None:
+                # Collated per sample, but identical across the batch.
+                coordinates = coordinates[0].to(device)
+            # A seeded generator makes every evaluation pass over the same
+            # weights return the same number, so "best epoch" is a real
+            # comparison rather than a draw from the flow-matching noise.
+            batch_generator = None
+            if eval_seed is not None:
+                batch_generator = torch.Generator(device=device)
+                batch_generator.manual_seed(eval_seed * 1_000_003 + batch_index)
             with torch.autocast(
                 device_type=device.type,
                 dtype=torch.float16,
@@ -174,6 +190,8 @@ def _epoch(
                     loss_config,
                     history_auxiliary=history_auxiliary,
                     target_mask=target_mask,
+                    generator=batch_generator,
+                    coordinates=coordinates,
                 )
             if training:
                 scaled_loss = losses["loss"] / gradient_accumulation_steps
@@ -185,26 +203,134 @@ def _epoch(
                     (batch_index + 1) % gradient_accumulation_steps == 0
                     or batch_index + 1 == len(loader)
                 ):
-                    if scaler is not None and scaler.is_enabled():
+                    amp = scaler is not None and scaler.is_enabled()
+                    overflowed = False
+                    if amp:
                         scaler.unscale_(optimizer)
-                    for name, parameter in model.named_parameters():
-                        if parameter.grad is not None:
-                            require_finite_tensor(parameter.grad, f"gradient {name}")
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                    if scaler is not None and scaler.is_enabled():
+                        # An fp16 gradient overflow is how GradScaler is meant to
+                        # find its scale: it skips the step and backs the scale
+                        # off. Counting it keeps the signal visible without
+                        # killing a multi-day run over a routine event.
+                        overflowed = any(
+                            not bool(torch.isfinite(parameter.grad).all())
+                            for parameter in model.parameters()
+                            if parameter.grad is not None
+                        )
+                        overflow_steps += int(overflowed)
+                    else:
+                        # Without loss scaling a non-finite gradient is a real
+                        # defect, so it still stops the run.
+                        for name, parameter in model.named_parameters():
+                            if parameter.grad is not None:
+                                require_finite_tensor(parameter.grad, f"gradient {name}")
+                    if not overflowed:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    if amp:
                         scaler.step(optimizer)
                         scaler.update()
                     else:
                         optimizer.step()
-                    for name, parameter in model.named_parameters():
-                        require_finite_tensor(parameter, f"updated parameter {name}")
+                    if not overflowed:
+                        for name, parameter in model.named_parameters():
+                            require_finite_tensor(parameter, f"updated parameter {name}")
                     optimizer.zero_grad(set_to_none=True)
             for name, value in losses.items():
                 totals[name] = totals.get(name, 0.0) + float(value.detach().cpu())
             batches += 1
     if batches == 0:
         raise ValueError("Monthly split produced no training/validation batches")
-    return {name: value / batches for name, value in totals.items()}
+    metrics = {name: value / batches for name, value in totals.items()}
+    if training:
+        metrics["amp_overflow_steps"] = float(overflow_steps)
+    return metrics
+
+
+def patch_latitude_weights(
+    schema: dict, patch_size: tuple[int, int] | None
+) -> np.ndarray | None:
+    """Area weights for the centre crop a validation window actually yields."""
+    if schema.get("layout") != "spatial":
+        return None
+    latitudes = np.asarray(schema["coords"]["lat"], dtype=np.float64)
+    height = len(latitudes)
+    patch_height = patch_size[0] if patch_size else height
+    # Mirrors MonthlyWindowDataset's centre crop when random_crop is off.
+    top = (height - patch_height) // 2
+    selected = latitudes[top : top + patch_height]
+    return np.clip(np.cos(np.deg2rad(selected)), 1e-6, None).reshape(1, -1, 1)
+
+
+def forecast_skill(
+    model: MonthlyLatentFlow,
+    dataset: MonthlyWindowDataset,
+    device: torch.device,
+    *,
+    windows: int,
+    ensemble_size: int,
+    integration_steps: int,
+    seed: int,
+    weights: np.ndarray | None = None,
+) -> dict[str, float]:
+    """Sample real forecasts on validation windows and score them.
+
+    Validation loss measures velocity regression and reconstruction, not
+    forecast quality, so on its own it cannot say whether a checkpoint forecasts
+    better than doing nothing. This samples the model the way inference will and
+    compares it against persistence on the same cells.
+    """
+    if min(windows, ensemble_size, integration_steps) < 1:
+        raise ValueError("skill windows/ensemble/integration steps must be positive")
+    if len(dataset) == 0:
+        raise ValueError("Forecast skill needs at least one validation window")
+    was_training = model.training
+    model.eval()
+    forecast_errors: list[float] = []
+    persistence_errors: list[float] = []
+    try:
+        for index in range(min(len(dataset), windows)):
+            item = dataset[index]
+            history = item["history"].unsqueeze(0).to(device)
+            auxiliary = item.get("history_auxiliary")
+            if auxiliary is not None:
+                auxiliary = auxiliary.unsqueeze(0).to(device)
+            coordinates = item.get("coordinates")
+            if coordinates is not None:
+                coordinates = coordinates.unsqueeze(0).to(device)
+            members = []
+            for member in range(ensemble_size):
+                generator = torch.Generator(device=device)
+                generator.manual_seed(seed + index * ensemble_size + member)
+                members.append(
+                    model.sample(
+                        history,
+                        integration_steps=integration_steps,
+                        generator=generator,
+                        history_auxiliary=auxiliary,
+                        coordinates=coordinates,
+                    )[0]
+                    .detach()
+                    .cpu()
+                    .numpy()
+                )
+            target = item["target"].numpy()
+            ensemble_mean = np.mean(members, axis=0)
+            # The last history month is the persistence forecast.
+            persistence = item["history"][-1].numpy()
+            forecast_errors.append(weighted_rmse(ensemble_mean, target, weights))
+            persistence_errors.append(weighted_rmse(persistence, target, weights))
+    finally:
+        model.train(was_training)
+    forecast_rmse = float(np.mean(forecast_errors))
+    persistence_rmse = float(np.mean(persistence_errors))
+    skill = (
+        float(1.0 - forecast_rmse / persistence_rmse) if persistence_rmse > 0 else 0.0
+    )
+    return {
+        "forecast_rmse": forecast_rmse,
+        "persistence_rmse": persistence_rmse,
+        "skill_vs_persistence": skill,
+        "windows": float(min(len(dataset), windows)),
+    }
 
 
 def _train_only_statistics(
@@ -285,6 +411,11 @@ def train_flow_model(
     num_workers: int = 0,
     gradient_checkpointing: bool = False,
     min_observed_fraction: float = 0.0,
+    skill_every_epochs: int = 1,
+    skill_windows: int = 4,
+    skill_ensemble_size: int = 2,
+    skill_integration_steps: int = 8,
+    positional_channels: int = 3,
 ) -> Path:
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -318,6 +449,8 @@ def train_flow_model(
     if gradient_accumulation_steps < 1:
         raise ValueError("gradient_accumulation_steps must be positive")
     observation_mask = load_observation_mask(archive_path, states, schema)
+    observed_fraction = load_observed_fraction(archive_path, states, schema)
+    coordinates = positional_grid(schema) if positional_channels else None
     if layout == "spatial":
         state_mean, state_scale = _train_only_statistics(
             states,
@@ -379,6 +512,8 @@ def train_flow_model(
         auxiliary_mean=auxiliary_mean,
         auxiliary_scale=auxiliary_scale,
         patch_size=patch_size,
+        observed_fraction=observed_fraction,
+        coordinates=coordinates,
         random_crop=layout == "spatial",
     )
     validation_dataset = MonthlyWindowDataset(
@@ -395,6 +530,8 @@ def train_flow_model(
         auxiliary_mean=auxiliary_mean,
         auxiliary_scale=auxiliary_scale,
         patch_size=patch_size,
+        observed_fraction=observed_fraction,
+        coordinates=coordinates,
         random_crop=False,
     )
     generator = torch.Generator().manual_seed(seed)
@@ -430,6 +567,7 @@ def train_flow_model(
         operator_modes_lon=operator_modes_lon,
         auxiliary_dim=auxiliary_dim,
         gradient_checkpointing=gradient_checkpointing,
+        positional_channels=positional_channels if layout == "spatial" else 0,
     )
     loss_config = FlowLossConfig()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -447,6 +585,10 @@ def train_flow_model(
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     best_validation = float("inf")
+    skill_weights = patch_latitude_weights(schema, patch_size)
+    # Selecting on sampled forecast skill only makes sense on epochs that
+    # measured it, so the selection metric follows whether it is enabled.
+    selection_metric = "forecast_rmse" if skill_every_epochs > 0 else "loss"
     history = []
     for epoch in range(1, epochs + 1):
         train_metrics = _epoch(
@@ -466,16 +608,46 @@ def train_flow_model(
             device,
             optimizer=None,
             mixed_precision=mixed_precision,
+            eval_seed=seed,
         )
-        history.append(
-            {"epoch": epoch, "train": train_metrics, "validation": validation_metrics}
-        )
-        print(
+        skill_metrics: dict[str, float] | None = None
+        if skill_every_epochs > 0 and epoch % skill_every_epochs == 0:
+            skill_metrics = forecast_skill(
+                model,
+                validation_dataset,
+                device,
+                windows=skill_windows,
+                ensemble_size=skill_ensemble_size,
+                integration_steps=skill_integration_steps,
+                seed=seed,
+                weights=skill_weights,
+            )
+        record = {
+            "epoch": epoch,
+            "train": train_metrics,
+            "validation": validation_metrics,
+        }
+        if skill_metrics is not None:
+            record["forecast_skill"] = skill_metrics
+        history.append(record)
+        message = (
             f"epoch={epoch:04d} train={train_metrics['loss']:.6f} "
             f"validation={validation_metrics['loss']:.6f}"
         )
-        if validation_metrics["loss"] < best_validation:
-            best_validation = validation_metrics["loss"]
+        if skill_metrics is not None:
+            message += (
+                f" forecast_rmse={skill_metrics['forecast_rmse']:.6f}"
+                f" skill_vs_persistence={skill_metrics['skill_vs_persistence']:+.4f}"
+            )
+        print(message)
+        if selection_metric == "forecast_rmse":
+            candidate = (
+                None if skill_metrics is None else skill_metrics["forecast_rmse"]
+            )
+        else:
+            candidate = validation_metrics["loss"]
+        if candidate is not None and candidate < best_validation:
+            best_validation = candidate
             torch.save(
                 {
                     "format": "climate_diffusion.monthly_latent_flow.v3",
@@ -495,6 +667,8 @@ def train_flow_model(
                         "last_time": str(times[-1]),
                         "best_validation_loss": best_validation,
                         "best_epoch": epoch,
+                        "selection_metric": selection_metric,
+                        "forecast_skill": skill_metrics,
                         "split": asdict(split),
                         "archive_contract_fingerprint": contract_fingerprint,
                         "missing_value_policy": "train_only_mean_with_observation_mask",
@@ -597,6 +771,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gradient-checkpointing", action="store_true")
     parser.add_argument("--min-observed-fraction", type=float, default=0.0)
     parser.add_argument(
+        "--skill-every-epochs",
+        type=int,
+        default=1,
+        help="Sample forecasts every N epochs and select on them; 0 selects on validation loss",
+    )
+    parser.add_argument("--skill-windows", type=int, default=4)
+    parser.add_argument("--skill-ensemble-size", type=int, default=2)
+    parser.add_argument("--skill-integration-steps", type=int, default=8)
+    parser.add_argument(
+        "--positional-channels",
+        type=int,
+        choices=(0, 3),
+        default=3,
+        help="Static sin(lat)/cos(lon)/sin(lon) planes on the encoder input",
+    )
+    parser.add_argument(
         "--output",
         default="download/flow-matching/monthly-v1/climate-flow-monthly-v1.pt",
     )
@@ -629,6 +819,11 @@ def main(argv: list[str] | None = None) -> int:
         num_workers=args.num_workers,
         gradient_checkpointing=args.gradient_checkpointing,
         min_observed_fraction=args.min_observed_fraction,
+        skill_every_epochs=args.skill_every_epochs,
+        skill_windows=args.skill_windows,
+        skill_ensemble_size=args.skill_ensemble_size,
+        skill_integration_steps=args.skill_integration_steps,
+        positional_channels=args.positional_channels,
     )
     print(path)
     return 0

@@ -294,6 +294,8 @@ def prepare_monthly_archive(
         "aggregation": aggregation,
         "missing_value_policy": "preserve_nan_impute_from_train_only",
         "infinity_policy": "fail_fast",
+        # Every value was scanned above, so loading need not rescan the archive.
+        "inf_checked": True,
         "target_lat_points": target_lat_points,
         "target_lon_points": target_lon_points,
     }
@@ -429,6 +431,8 @@ def _write_spatial_archive(
         "aggregation": aggregation,
         "missing_value_policy": "preserve_nan_impute_from_train_only",
         "infinity_policy": "fail_fast",
+        # Every month was scanned while writing, so loading need not rescan.
+        "inf_checked": True,
         "target_lat_points": target_lat_points,
         "target_lon_points": target_lon_points,
     }
@@ -453,7 +457,9 @@ def load_monthly_archive(path: str | Path) -> tuple[np.ndarray, np.ndarray, dict
         if len(states) != len(times):
             raise ValueError("Spatial archive state/time lengths do not match")
         validate_monthly_times(times)
-        _require_no_inf_monthly(states, "spatial monthly archive")
+        if not schema.get("inf_checked"):
+            # Pre-`inf_checked` archives have no recorded guarantee, so scan.
+            _require_no_inf_monthly(states, "spatial monthly archive")
         return states, times, schema
     with np.load(archive_path, allow_pickle=False) as archive:
         states = archive["states"].astype(np.float32)
@@ -466,7 +472,8 @@ def load_monthly_archive(path: str | Path) -> tuple[np.ndarray, np.ndarray, dict
     if len(states) != len(times):
         raise ValueError("Vector archive state/time lengths do not match")
     validate_monthly_times(times)
-    _require_no_inf_monthly(states, "vector monthly archive")
+    if not schema.get("inf_checked"):
+        _require_no_inf_monthly(states, "vector monthly archive")
     return states, times, schema
 
 
@@ -478,6 +485,52 @@ def load_auxiliary_states(path: str | Path, schema: dict[str, Any]) -> np.ndarra
     if values.ndim != 2 or values.shape[1] != int(schema.get("auxiliary_dim", 0)):
         raise ValueError("Spatial auxiliary archive does not match its schema")
     _require_no_inf_monthly(values, "spatial auxiliary archive")
+    return values
+
+
+POSITIONAL_CHANNEL_NAMES = ("sin_lat", "cos_lon", "sin_lon")
+
+
+def positional_grid(schema: dict[str, Any]) -> np.ndarray | None:
+    """Static ``[3, lat, lon]`` coordinate planes for a spatial archive.
+
+    A randomly cropped patch is otherwise indistinguishable between the equator
+    and a pole, though the physics is not. Longitude is encoded as a sine/cosine
+    pair so the dateline carries no discontinuity.
+    """
+    if schema.get("layout") != "spatial":
+        return None
+    latitudes = np.asarray(schema["coords"]["lat"], dtype=np.float32)
+    longitudes = np.asarray(schema["coords"]["lon"], dtype=np.float32)
+    lat_radians = np.deg2rad(latitudes)[:, None]
+    lon_radians = np.deg2rad(longitudes)[None, :]
+    height, width = len(latitudes), len(longitudes)
+    planes = np.empty((3, height, width), dtype=np.float32)
+    planes[0] = np.broadcast_to(np.sin(lat_radians), (height, width))
+    planes[1] = np.broadcast_to(np.cos(lon_radians), (height, width))
+    planes[2] = np.broadcast_to(np.sin(lon_radians), (height, width))
+    return planes
+
+
+def load_observed_fraction(
+    path: str | Path, states: np.ndarray, schema: dict[str, Any]
+) -> np.ndarray | None:
+    """Per-month, per-channel observed fractions recorded when the archive was built.
+
+    Deciding whether a window is observed enough only needs these numbers. Without
+    them the mask memmap is rescanned once per window, which re-reads the whole
+    archive several times over before the first gradient step.
+    """
+    archive_path = Path(path)
+    if schema.get("layout") != "spatial" or not archive_path.is_dir():
+        return None
+    fraction_path = archive_path / "observed_fraction.npy"
+    if not fraction_path.is_file():
+        return None
+    values = np.load(fraction_path, mmap_mode="r")
+    expected = (len(states), int(schema["spatial_channels"]))
+    if values.shape != expected:
+        raise ValueError("Observed-fraction array does not match the archive shape")
     return values
 
 
@@ -525,10 +578,16 @@ class MonthlyWindowDataset(Dataset):
         auxiliary_scale: np.ndarray | None = None,
         patch_size: tuple[int, int] | None = None,
         random_crop: bool = False,
+        observed_fraction: np.ndarray | None = None,
+        coordinates: np.ndarray | None = None,
     ):
         if min(history_months, lead_months) < 1:
             raise ValueError("history_months and lead_months must be positive")
         self.states = states
+        self.observed_fraction = observed_fraction
+        self.coordinates = (
+            None if coordinates is None else np.asarray(coordinates, dtype=np.float32)
+        )
         self.mean = None if mean is None else np.asarray(mean, dtype=np.float32)
         self.scale = None if scale is None else np.asarray(scale, dtype=np.float32)
         self.observation_mask = observation_mask
@@ -564,6 +623,18 @@ class MonthlyWindowDataset(Dataset):
 
     def _window_is_observed(self, start: int) -> bool:
         target_index = start + self.history_months + self.lead_months - 1
+        if self.observed_fraction is not None:
+            # Identical to the mask scan below: each stored value is already the
+            # spatial mean for that month and channel, and every month covers the
+            # same number of cells.
+            recorded = np.concatenate(
+                (
+                    np.asarray(self.observed_fraction[start : start + self.history_months]),
+                    np.asarray(self.observed_fraction[target_index])[None],
+                ),
+                axis=0,
+            )
+            return bool(np.all(recorded.mean(axis=0) > self.min_observed_fraction))
         history_mask = self._mask_slice(slice(start, start + self.history_months))
         target_mask = self._mask_slice(target_index)[None]
         combined = np.concatenate((history_mask, target_mask), axis=0)
@@ -585,6 +656,7 @@ class MonthlyWindowDataset(Dataset):
         target = np.asarray(self.states[target_index], dtype=np.float32)
         history_mask = self._mask_slice(slice(start, start + self.history_months))
         target_mask = self._mask_slice(target_index)
+        coordinates = self.coordinates
         require_no_inf_numpy(history, f"history window start={start}")
         require_no_inf_numpy(target, f"target window start={start}")
         if self.mean is not None and self.scale is not None:
@@ -613,11 +685,19 @@ class MonthlyWindowDataset(Dataset):
             target_mask = np.take(
                 target_mask[..., top : top + patch_height, :], lon_index, axis=-1
             )
+            if coordinates is not None:
+                # The crop is what tells the model where on the globe it is, so
+                # the coordinate planes have to follow it exactly.
+                coordinates = np.take(
+                    coordinates[..., top : top + patch_height, :], lon_index, axis=-1
+                )
         item = {
             "history": torch.as_tensor(history.copy(), dtype=torch.float32),
             "target": torch.as_tensor(target.copy(), dtype=torch.float32),
             "target_mask": torch.as_tensor(target_mask.copy(), dtype=torch.bool),
         }
+        if coordinates is not None:
+            item["coordinates"] = torch.as_tensor(coordinates.copy(), dtype=torch.float32)
         if self.auxiliary_states is not None:
             auxiliary = np.asarray(
                 self.auxiliary_states[start : start + self.history_months],

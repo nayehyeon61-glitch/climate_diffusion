@@ -14,6 +14,7 @@ from .spatial import (
     SpatialAutoencoder,
     SpatialResidualBlock,
     SpectralOperator2d,
+    set_longitude_wrap,
     tiled_apply,
 )
 from .validation import require_finite_tensor
@@ -194,12 +195,79 @@ class MonthlyLatentFlow(nn.Module):
                 config.spatial_downsample_levels,
                 operator_modes=modes,
                 gradient_checkpointing=config.gradient_checkpointing,
+                input_channels=config.encoder_input_channels,
             )
             self.vector_field = SpatialConditionalVectorField(config)
 
     @property
     def is_spatial(self) -> bool:
         return self.config.backend != "vector_mlp"
+
+    def _configure_longitude_wrap(self, width: int) -> None:
+        """Wrap longitude only when the input actually spans the whole grid."""
+        if self.is_spatial:
+            set_longitude_wrap(self, width == self.config.grid_width)
+
+    def _with_coordinates(
+        self, values: torch.Tensor, coordinates: torch.Tensor | None
+    ) -> torch.Tensor:
+        """Append the static coordinate planes the encoder expects."""
+        if not self.config.positional_channels:
+            return values
+        if coordinates is None:
+            raise ValueError(
+                "This checkpoint encodes positional channels; coordinates are required"
+            )
+        if coordinates.shape[-3] != self.config.positional_channels:
+            raise ValueError(
+                f"Expected {self.config.positional_channels} positional channels, "
+                f"received {coordinates.shape[-3]}"
+            )
+        if coordinates.shape[-2:] != values.shape[-2:]:
+            raise ValueError(
+                f"Coordinates cover {tuple(coordinates.shape[-2:])} but the field is "
+                f"{tuple(values.shape[-2:])}"
+            )
+        expanded = coordinates.expand(values.shape[0], -1, -1, -1)
+        return torch.cat((values, expanded), dim=1)
+
+    def _latent_extent(self, size: int) -> int:
+        """Latent rows/columns the encoder produces for a spatial extent.
+
+        Each downsample level is a stride-2 padded convolution, which rounds up.
+        """
+        for _ in range(self.config.spatial_downsample_levels):
+            size = -(-size // 2)
+        return size
+
+    def _draw_flow_pair(
+        self,
+        target_latent: torch.Tensor,
+        batch_size: int,
+        time_dtype: torch.dtype,
+        generator: torch.Generator | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Sample the flow-matching source latent and interpolation time.
+
+        With a generator the draw is reproducible and the time is stratified
+        over ``[0, 1)`` instead of independent per sample, so an evaluation pass
+        estimates the flow loss with far less Monte-Carlo noise. Training keeps
+        independent draws.
+        """
+        device = target_latent.device
+        if generator is None:
+            return torch.randn_like(target_latent), torch.rand(
+                batch_size, device=device, dtype=time_dtype
+            )
+        source_latent = torch.randn(
+            target_latent.shape,
+            device=device,
+            dtype=target_latent.dtype,
+            generator=generator,
+        )
+        offset = torch.rand(1, device=device, dtype=time_dtype, generator=generator)
+        strata = torch.arange(batch_size, device=device, dtype=time_dtype)
+        return source_latent, (strata + offset) / batch_size
 
     def loss(
         self,
@@ -208,6 +276,9 @@ class MonthlyLatentFlow(nn.Module):
         config: FlowLossConfig | None = None,
         history_auxiliary: torch.Tensor | None = None,
         target_mask: torch.Tensor | None = None,
+        *,
+        generator: torch.Generator | None = None,
+        coordinates: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         config = config or FlowLossConfig()
         require_finite_tensor(history, "flow loss history input")
@@ -218,14 +289,19 @@ class MonthlyLatentFlow(nn.Module):
         if self.is_spatial:
             if history.ndim != 5 or target.ndim != 4:
                 raise ValueError("Spatial flow expects history [B,T,C,H,W] and target [B,C,H,W]")
+            self._configure_longitude_wrap(target.shape[-1])
             batch, months, channels, height, width = history.shape
             encoded_history = self.autoencoder.encode(
-                history.reshape(batch * months, channels, height, width)
+                self._with_coordinates(
+                    history.reshape(batch * months, channels, height, width), coordinates
+                )
             )
             history_latents = encoded_history.reshape(
                 batch, months, *encoded_history.shape[1:]
             )
-            target_latent = self.autoencoder.encode(target)
+            target_latent = self.autoencoder.encode(
+                self._with_coordinates(target, coordinates)
+            )
             reconstruction = self.autoencoder.decode(target_latent, target.shape[-2:])
             time_shape = (batch_size, 1, 1, 1)
         else:
@@ -236,11 +312,18 @@ class MonthlyLatentFlow(nn.Module):
         require_finite_tensor(history_latents, "encoded history latent")
         require_finite_tensor(target_latent, "encoded target latent")
         require_finite_tensor(reconstruction, "decoded target reconstruction")
-        source_latent = torch.randn_like(target_latent)
-        time = torch.rand(batch_size, device=target.device, dtype=target.dtype)
+        # The flow branch trains on a fixed target: without the detach the
+        # encoder also learns to make its own latents easy to predict, which
+        # together with the latent penalty pushes towards latent collapse.
+        flow_target_latent = target_latent.detach()
+        source_latent, time = self._draw_flow_pair(
+            flow_target_latent, batch_size, target.dtype, generator
+        )
         interpolation_time = time.reshape(time_shape)
-        interpolated = (1.0 - interpolation_time) * source_latent + interpolation_time * target_latent
-        target_velocity = target_latent - source_latent
+        interpolated = (
+            1.0 - interpolation_time
+        ) * source_latent + interpolation_time * flow_target_latent
+        target_velocity = flow_target_latent - source_latent
         if self.is_spatial:
             condition = self.vector_field.encode_condition(history_latents, history_auxiliary)
         else:
@@ -284,6 +367,8 @@ class MonthlyLatentFlow(nn.Module):
         integration_steps: int = 32,
         generator: torch.Generator | None = None,
         history_auxiliary: torch.Tensor | None = None,
+        noise: torch.Tensor | None = None,
+        coordinates: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if integration_steps < 1:
             raise ValueError("integration_steps must be positive")
@@ -291,9 +376,12 @@ class MonthlyLatentFlow(nn.Module):
         if history_auxiliary is not None:
             require_finite_tensor(history_auxiliary, "flow sampling auxiliary history")
         if self.is_spatial:
+            self._configure_longitude_wrap(history.shape[-1])
             batch, months, channels, height, width = history.shape
             encoded_history = self.autoencoder.encode(
-                history.reshape(batch * months, channels, height, width)
+                self._with_coordinates(
+                    history.reshape(batch * months, channels, height, width), coordinates
+                )
             )
             history_latents = encoded_history.reshape(
                 batch, months, *encoded_history.shape[1:]
@@ -304,12 +392,21 @@ class MonthlyLatentFlow(nn.Module):
             history_latents = self.autoencoder.encode(history)
             condition = self.vector_field.encode_condition(history_latents)
             latent_shape = (history.shape[0], self.config.latent_dim)
-        latent = torch.randn(
-            *latent_shape,
-            device=history.device,
-            dtype=history.dtype,
-            generator=generator,
-        )
+        if noise is None:
+            latent = torch.randn(
+                *latent_shape,
+                device=history.device,
+                dtype=history.dtype,
+                generator=generator,
+            )
+        else:
+            if tuple(noise.shape) != tuple(latent_shape):
+                raise ValueError(
+                    f"Expected noise shape {tuple(latent_shape)}, "
+                    f"received {tuple(noise.shape)}"
+                )
+            latent = noise.to(device=history.device, dtype=history.dtype)
+        require_finite_tensor(latent, "flow sampling initial latent")
         step = 1.0 / integration_steps
         for index in range(integration_steps):
             time = torch.full(
@@ -342,16 +439,57 @@ class MonthlyLatentFlow(nn.Module):
         integration_steps: int = 32,
         generator: torch.Generator | None = None,
         history_auxiliary: torch.Tensor | None = None,
+        coordinates: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if not self.is_spatial:
             raise ValueError("Tiled sampling is only available for spatial backends")
+        height, width = history.shape[-2:]
+        factor = 2**self.config.spatial_downsample_levels
+        # One noise field for the whole globe, sliced per tile. Drawing per tile
+        # instead would make each ensemble member a mosaic of independent
+        # samples, and the overlap blend would average them and flatten the
+        # spread exactly where tiles meet.
+        latent_height, latent_width = self._latent_extent(height), self._latent_extent(width)
+        global_noise = torch.randn(
+            history.shape[0],
+            self.config.spatial_latent_channels,
+            latent_height,
+            latent_width,
+            device=history.device,
+            dtype=history.dtype,
+            generator=generator,
+        )
 
-        def predict(patch: torch.Tensor) -> torch.Tensor:
+        data_channels = history.shape[2]
+        if coordinates is not None:
+            # Ride along as extra history channels so tiled_apply's own cropping
+            # slices the coordinate planes exactly like the data.
+            planes = coordinates.expand(history.shape[0], -1, -1, -1)
+            history = torch.cat(
+                (history, planes.unsqueeze(1).expand(-1, history.shape[1], -1, -1, -1)),
+                dim=2,
+            )
+
+        def predict(patch: torch.Tensor, lat_start: int, lon_start: int) -> torch.Tensor:
+            tile_coordinates = None
+            if coordinates is not None:
+                tile_coordinates = patch[:, 0, data_channels:]
+                patch = patch[:, :, :data_channels]
+            rows = self._latent_extent(patch.shape[-2])
+            columns = self._latent_extent(patch.shape[-1])
+            # Latitude cannot wrap, so keep the slice inside the noise field.
+            top = min(lat_start // factor, latent_height - rows)
+            row_index = torch.arange(top, top + rows, device=history.device)
+            column_index = torch.arange(
+                lon_start // factor, lon_start // factor + columns, device=history.device
+            ).remainder(latent_width)
+            noise = global_noise.index_select(-2, row_index).index_select(-1, column_index)
             return self.sample(
                 patch,
                 integration_steps=integration_steps,
-                generator=generator,
                 history_auxiliary=history_auxiliary,
+                noise=noise,
+                coordinates=tile_coordinates,
             )
 
         return tiled_apply(history, predict, tile_size=tile_size, overlap=overlap)

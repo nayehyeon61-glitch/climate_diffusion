@@ -11,7 +11,14 @@ from torch.utils.checkpoint import checkpoint
 
 
 class PeriodicConv2d(nn.Module):
-    """Convolution with circular longitude and replicated latitude padding."""
+    """Convolution with circular longitude and replicated latitude padding.
+
+    Wrapping longitude is only correct when the input spans the whole globe. A
+    patch that covers part of the longitude range must not wrap, or every layer
+    joins its two edges as if they were neighbours when they are thousands of
+    kilometres apart. ``wrap_longitude`` selects between the two, and
+    :func:`set_longitude_wrap` drives it from the caller that knows the grid.
+    """
 
     def __init__(
         self,
@@ -26,6 +33,7 @@ class PeriodicConv2d(nn.Module):
         if kernel_size % 2 != 1:
             raise ValueError("PeriodicConv2d requires an odd kernel size")
         self.padding = kernel_size // 2
+        self.wrap_longitude = True
         self.conv = nn.Conv2d(
             in_channels,
             out_channels,
@@ -38,10 +46,18 @@ class PeriodicConv2d(nn.Module):
     def forward(self, values: torch.Tensor) -> torch.Tensor:
         pad = self.padding
         if pad:
-            values = F.pad(values, (pad, pad, 0, 0), mode="circular")
+            longitude_mode = "circular" if self.wrap_longitude else "replicate"
+            values = F.pad(values, (pad, pad, 0, 0), mode=longitude_mode)
             # Replication is stable at the poles and does not invent a second seam.
             values = F.pad(values, (0, 0, pad, pad), mode="replicate")
         return self.conv(values)
+
+
+def set_longitude_wrap(module: nn.Module, wrap: bool) -> None:
+    """Enable circular longitude padding only for globe-spanning inputs."""
+    for layer in module.modules():
+        if isinstance(layer, PeriodicConv2d):
+            layer.wrap_longitude = wrap
 
 
 class SpatialResidualBlock(nn.Module):
@@ -110,11 +126,16 @@ class SpatialAutoencoder(nn.Module):
         *,
         operator_modes: tuple[int, int] | None = None,
         gradient_checkpointing: bool = False,
+        input_channels: int | None = None,
     ) -> None:
         super().__init__()
         self.downsample_levels = downsample_levels
         self.gradient_checkpointing = gradient_checkpointing
-        self.input_projection = PeriodicConv2d(channels, base_channels)
+        # The encoder may read extra static planes (coordinates) that the
+        # decoder does not reconstruct, so the two ends can differ.
+        self.input_projection = PeriodicConv2d(
+            channels if input_channels is None else input_channels, base_channels
+        )
         encoder = []
         current = base_channels
         for _ in range(downsample_levels):
@@ -195,15 +216,19 @@ def _blend_window(
 
 def tiled_apply(
     history: torch.Tensor,
-    predict: Callable[[torch.Tensor], torch.Tensor],
+    predict: Callable[[torch.Tensor, int, int], torch.Tensor],
     *,
     tile_size: tuple[int, int],
     overlap: int,
 ) -> torch.Tensor:
     """Apply a patch predictor and blend it into a seam-safe global field.
 
-    ``history`` is ``[B, T, C, H, W]`` and ``predict`` returns ``[B, C, h, w]``.
-    Longitude tiles wrap around the dateline; latitude tiles stop at the poles.
+    ``history`` is ``[B, T, C, H, W]`` and ``predict`` takes the patch plus its
+    ``(latitude, longitude)`` origin on the global grid and returns
+    ``[B, C, h, w]``. The origin lets a caller keep a tile's randomness tied to
+    where it sits, so overlapping tiles agree instead of blending independent
+    draws. Longitude tiles wrap around the dateline; latitude tiles stop at the
+    poles.
     """
 
     if history.ndim != 5:
@@ -212,7 +237,10 @@ def tiled_apply(
     tile_height, tile_width = tile_size
     lat_starts = tile_starts(height, tile_height, overlap)
     lon_starts = tile_starts(width, tile_width, overlap, periodic=True)
-    result = history.new_zeros((history.shape[0], history.shape[2], height, width))
+    # The predictor may return fewer channels than it was given -- a caller can
+    # pass static planes it does not reconstruct -- so size the canvas from the
+    # first prediction rather than from the input.
+    result: torch.Tensor | None = None
     weights = history.new_zeros((1, 1, height, width))
     window = _blend_window(
         tile_height,
@@ -227,9 +255,13 @@ def tiled_apply(
                 lon_start, lon_start + tile_width, device=history.device
             ).remainder(width)
             patch = history.index_select(-2, lat_index).index_select(-1, lon_index)
-            prediction = predict(patch)
+            prediction = predict(patch, lat_start, lon_start)
             if prediction.shape[-2:] != (tile_height, tile_width):
                 raise ValueError("Patch predictor changed the requested tile shape")
+            if result is None:
+                result = history.new_zeros(
+                    (history.shape[0], prediction.shape[1], height, width)
+                )
             for local_lon, global_lon in enumerate(lon_index.tolist()):
                 result[:, :, lat_start : lat_start + tile_height, global_lon] += (
                     prediction[:, :, :, local_lon] * window[:, :, :, local_lon]
@@ -237,6 +269,6 @@ def tiled_apply(
                 weights[:, :, lat_start : lat_start + tile_height, global_lon] += window[
                     :, :, :, local_lon
                 ]
-    if torch.any(weights == 0):
+    if result is None or torch.any(weights == 0):
         raise RuntimeError("Tile configuration left uncovered grid cells")
     return result / weights

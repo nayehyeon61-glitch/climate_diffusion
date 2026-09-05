@@ -2,10 +2,11 @@ import json
 
 import numpy as np
 import pandas as pd
+import pytest
 import torch
 import xarray as xr
 
-from climate_diffusion.config import FlowModelConfig
+from climate_diffusion.config import FlowLossConfig, FlowModelConfig
 from climate_diffusion.data import (
     load_monthly_archive,
     prepare_monthly_archive,
@@ -13,7 +14,12 @@ from climate_diffusion.data import (
     spatialize_dataset,
 )
 from climate_diffusion.model import MonthlyLatentFlow
-from climate_diffusion.spatial import PeriodicConv2d, SpatialAutoencoder, tiled_apply
+from climate_diffusion.spatial import (
+    PeriodicConv2d,
+    SpatialAutoencoder,
+    set_longitude_wrap,
+    tiled_apply,
+)
 
 
 def spatial_config(backend="spatial_conv", height=16, width=24):
@@ -71,15 +77,167 @@ def test_periodic_longitude_convolution_is_roll_equivariant():
     torch.testing.assert_close(actual, expected)
 
 
+def test_sub_global_patch_pads_by_replication_instead_of_wrapping():
+    """A patch narrower than the grid must not join its two edges."""
+    torch.manual_seed(3)
+    layer = PeriodicConv2d(1, 1)
+    field = torch.randn(1, 1, 6, 32)
+    patch = field[..., 4:12]
+
+    set_longitude_wrap(layer, False)
+    actual = layer(patch)
+
+    padded = torch.nn.functional.pad(patch, (1, 1, 0, 0), mode="replicate")
+    padded = torch.nn.functional.pad(padded, (0, 0, 1, 1), mode="replicate")
+    torch.testing.assert_close(actual, layer.conv(padded))
+
+    # The interior never depended on the padding mode, only the two edges did.
+    set_longitude_wrap(layer, True)
+    wrapped = layer(patch)
+    torch.testing.assert_close(actual[..., 1:-1], wrapped[..., 1:-1])
+    assert not torch.allclose(actual[..., 0], wrapped[..., 0])
+
+
+def test_model_wraps_longitude_only_for_globe_spanning_input():
+    config = spatial_config(height=8, width=16)
+    model = MonthlyLatentFlow(config)
+
+    def wrap_flags():
+        return {
+            layer.wrap_longitude
+            for layer in model.modules()
+            if isinstance(layer, PeriodicConv2d)
+        }
+
+    model.loss(torch.randn(2, 3, 2, 8, 16), torch.randn(2, 2, 8, 16))
+    assert wrap_flags() == {True}
+
+    model.loss(torch.randn(2, 3, 2, 8, 8), torch.randn(2, 2, 8, 8))
+    assert wrap_flags() == {False}
+
+    model.sample(torch.randn(1, 3, 2, 8, 16), integration_steps=1)
+    assert wrap_flags() == {True}
+
+
+def test_flow_term_does_not_backpropagate_through_the_target_encoder():
+    """The flow branch trains against a detached latent, not a moving one."""
+    torch.manual_seed(5)
+    model = MonthlyLatentFlow(spatial_config(height=8, width=16))
+    target = torch.randn(2, 2, 8, 16, requires_grad=True)
+    losses = model.loss(
+        torch.randn(2, 3, 2, 8, 16),
+        target,
+        FlowLossConfig(
+            reconstruction_weight=0.0,
+            flow_weight=1.0,
+            latent_regularization_weight=0.0,
+        ),
+    )
+    losses["loss"].backward()
+    assert target.grad is None or torch.count_nonzero(target.grad) == 0
+
+
+def test_seeded_loss_is_reproducible_and_unseeded_is_not():
+    torch.manual_seed(6)
+    model = MonthlyLatentFlow(spatial_config(height=8, width=16))
+    history = torch.randn(4, 3, 2, 8, 16)
+    target = torch.randn(4, 2, 8, 16)
+
+    def flow_loss(seed=None):
+        generator = None
+        if seed is not None:
+            generator = torch.Generator().manual_seed(seed)
+        with torch.no_grad():
+            return float(model.loss(history, target, generator=generator)["flow_matching_mse"])
+
+    assert flow_loss(seed=11) == flow_loss(seed=11)
+    assert flow_loss(seed=11) != flow_loss(seed=12)
+    assert flow_loss() != flow_loss()
+
+
 def test_tiled_overlap_stitching_preserves_identity_and_dateline():
     history = torch.randn(1, 3, 2, 9, 13)
     output = tiled_apply(
         history,
-        lambda patch: patch[:, -1],
+        lambda patch, lat_start, lon_start: patch[:, -1],
         tile_size=(6, 7),
         overlap=3,
     )
     torch.testing.assert_close(output, history[:, -1])
+
+
+def test_tiled_apply_reports_each_tile_origin():
+    history = torch.randn(1, 2, 1, 9, 12)
+    seen = []
+
+    def predict(patch, lat_start, lon_start):
+        seen.append((lat_start, lon_start, tuple(patch.shape[-2:])))
+        return patch[:, -1]
+
+    tiled_apply(history, predict, tile_size=(6, 6), overlap=2)
+    assert seen == [
+        (0, 0, (6, 6)),
+        (0, 4, (6, 6)),
+        (0, 8, (6, 6)),
+        (3, 0, (6, 6)),
+        (3, 4, (6, 6)),
+        (3, 8, (6, 6)),
+    ]
+
+
+def test_overlapping_tiles_share_one_global_noise_field():
+    """Tiles must integrate the same draw where they overlap, not average two."""
+    config = spatial_config(height=8, width=16)
+    model = MonthlyLatentFlow(config).eval()
+    history = torch.randn(1, 3, 2, 8, 16)
+
+    captured = []
+    original = model.sample
+
+    def record(patch, **kwargs):
+        captured.append(kwargs["noise"])
+        return original(patch, **kwargs)
+
+    model.sample = record
+    model.sample_tiled(
+        history,
+        tile_size=(8, 8),
+        overlap=4,
+        integration_steps=1,
+        generator=torch.Generator().manual_seed(0),
+    )
+    model.sample = original
+
+    # Tiles start at longitude 0, 4, 8, 12 with a latent factor of 2, so tile 0
+    # and tile 1 share their trailing/leading latent columns.
+    assert len(captured) == 4
+    torch.testing.assert_close(captured[0][..., 2:], captured[1][..., :2])
+    torch.testing.assert_close(captured[1][..., 2:], captured[2][..., :2])
+
+
+def test_tiled_sampling_is_reproducible_and_seed_dependent():
+    config = spatial_config(height=8, width=16)
+    model = MonthlyLatentFlow(config).eval()
+    history = torch.randn(1, 3, 2, 8, 16)
+
+    def run(seed):
+        return model.sample_tiled(
+            history,
+            tile_size=(8, 8),
+            overlap=4,
+            integration_steps=2,
+            generator=torch.Generator().manual_seed(seed),
+        )
+
+    torch.testing.assert_close(run(0), run(0))
+    assert not torch.allclose(run(0), run(1))
+
+
+def test_sample_rejects_noise_that_does_not_match_the_latent_grid():
+    model = MonthlyLatentFlow(spatial_config(height=8, width=16)).eval()
+    history = torch.randn(1, 3, 2, 8, 16)
+    with pytest.raises(ValueError, match="Expected noise shape"):
+        model.sample(history, integration_steps=1, noise=torch.randn(1, 4, 3, 3))
 
 
 def test_spatial_archive_preserves_channels_coordinates_and_roundtrip(tmp_path):
