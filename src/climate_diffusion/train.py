@@ -19,6 +19,7 @@ from .data import (
     load_monthly_archive,
     load_observation_mask,
 )
+from .evaluation import weighted_rmse
 from .model import MonthlyLatentFlow
 from .validation import (
     archive_contract_fingerprint,
@@ -237,6 +238,90 @@ def _epoch(
     return metrics
 
 
+def patch_latitude_weights(
+    schema: dict, patch_size: tuple[int, int] | None
+) -> np.ndarray | None:
+    """Area weights for the centre crop a validation window actually yields."""
+    if schema.get("layout") != "spatial":
+        return None
+    latitudes = np.asarray(schema["coords"]["lat"], dtype=np.float64)
+    height = len(latitudes)
+    patch_height = patch_size[0] if patch_size else height
+    # Mirrors MonthlyWindowDataset's centre crop when random_crop is off.
+    top = (height - patch_height) // 2
+    selected = latitudes[top : top + patch_height]
+    return np.clip(np.cos(np.deg2rad(selected)), 1e-6, None).reshape(1, -1, 1)
+
+
+def forecast_skill(
+    model: MonthlyLatentFlow,
+    dataset: MonthlyWindowDataset,
+    device: torch.device,
+    *,
+    windows: int,
+    ensemble_size: int,
+    integration_steps: int,
+    seed: int,
+    weights: np.ndarray | None = None,
+) -> dict[str, float]:
+    """Sample real forecasts on validation windows and score them.
+
+    Validation loss measures velocity regression and reconstruction, not
+    forecast quality, so on its own it cannot say whether a checkpoint forecasts
+    better than doing nothing. This samples the model the way inference will and
+    compares it against persistence on the same cells.
+    """
+    if min(windows, ensemble_size, integration_steps) < 1:
+        raise ValueError("skill windows/ensemble/integration steps must be positive")
+    if len(dataset) == 0:
+        raise ValueError("Forecast skill needs at least one validation window")
+    was_training = model.training
+    model.eval()
+    forecast_errors: list[float] = []
+    persistence_errors: list[float] = []
+    try:
+        for index in range(min(len(dataset), windows)):
+            item = dataset[index]
+            history = item["history"].unsqueeze(0).to(device)
+            auxiliary = item.get("history_auxiliary")
+            if auxiliary is not None:
+                auxiliary = auxiliary.unsqueeze(0).to(device)
+            members = []
+            for member in range(ensemble_size):
+                generator = torch.Generator(device=device)
+                generator.manual_seed(seed + index * ensemble_size + member)
+                members.append(
+                    model.sample(
+                        history,
+                        integration_steps=integration_steps,
+                        generator=generator,
+                        history_auxiliary=auxiliary,
+                    )[0]
+                    .detach()
+                    .cpu()
+                    .numpy()
+                )
+            target = item["target"].numpy()
+            ensemble_mean = np.mean(members, axis=0)
+            # The last history month is the persistence forecast.
+            persistence = item["history"][-1].numpy()
+            forecast_errors.append(weighted_rmse(ensemble_mean, target, weights))
+            persistence_errors.append(weighted_rmse(persistence, target, weights))
+    finally:
+        model.train(was_training)
+    forecast_rmse = float(np.mean(forecast_errors))
+    persistence_rmse = float(np.mean(persistence_errors))
+    skill = (
+        float(1.0 - forecast_rmse / persistence_rmse) if persistence_rmse > 0 else 0.0
+    )
+    return {
+        "forecast_rmse": forecast_rmse,
+        "persistence_rmse": persistence_rmse,
+        "skill_vs_persistence": skill,
+        "windows": float(min(len(dataset), windows)),
+    }
+
+
 def _train_only_statistics(
     states: np.ndarray,
     raw_indices: list[int],
@@ -315,6 +400,10 @@ def train_flow_model(
     num_workers: int = 0,
     gradient_checkpointing: bool = False,
     min_observed_fraction: float = 0.0,
+    skill_every_epochs: int = 1,
+    skill_windows: int = 4,
+    skill_ensemble_size: int = 2,
+    skill_integration_steps: int = 8,
 ) -> Path:
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -477,6 +566,10 @@ def train_flow_model(
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     best_validation = float("inf")
+    skill_weights = patch_latitude_weights(schema, patch_size)
+    # Selecting on sampled forecast skill only makes sense on epochs that
+    # measured it, so the selection metric follows whether it is enabled.
+    selection_metric = "forecast_rmse" if skill_every_epochs > 0 else "loss"
     history = []
     for epoch in range(1, epochs + 1):
         train_metrics = _epoch(
@@ -498,15 +591,44 @@ def train_flow_model(
             mixed_precision=mixed_precision,
             eval_seed=seed,
         )
-        history.append(
-            {"epoch": epoch, "train": train_metrics, "validation": validation_metrics}
-        )
-        print(
+        skill_metrics: dict[str, float] | None = None
+        if skill_every_epochs > 0 and epoch % skill_every_epochs == 0:
+            skill_metrics = forecast_skill(
+                model,
+                validation_dataset,
+                device,
+                windows=skill_windows,
+                ensemble_size=skill_ensemble_size,
+                integration_steps=skill_integration_steps,
+                seed=seed,
+                weights=skill_weights,
+            )
+        record = {
+            "epoch": epoch,
+            "train": train_metrics,
+            "validation": validation_metrics,
+        }
+        if skill_metrics is not None:
+            record["forecast_skill"] = skill_metrics
+        history.append(record)
+        message = (
             f"epoch={epoch:04d} train={train_metrics['loss']:.6f} "
             f"validation={validation_metrics['loss']:.6f}"
         )
-        if validation_metrics["loss"] < best_validation:
-            best_validation = validation_metrics["loss"]
+        if skill_metrics is not None:
+            message += (
+                f" forecast_rmse={skill_metrics['forecast_rmse']:.6f}"
+                f" skill_vs_persistence={skill_metrics['skill_vs_persistence']:+.4f}"
+            )
+        print(message)
+        if selection_metric == "forecast_rmse":
+            candidate = (
+                None if skill_metrics is None else skill_metrics["forecast_rmse"]
+            )
+        else:
+            candidate = validation_metrics["loss"]
+        if candidate is not None and candidate < best_validation:
+            best_validation = candidate
             torch.save(
                 {
                     "format": "climate_diffusion.monthly_latent_flow.v3",
@@ -526,6 +648,8 @@ def train_flow_model(
                         "last_time": str(times[-1]),
                         "best_validation_loss": best_validation,
                         "best_epoch": epoch,
+                        "selection_metric": selection_metric,
+                        "forecast_skill": skill_metrics,
                         "split": asdict(split),
                         "archive_contract_fingerprint": contract_fingerprint,
                         "missing_value_policy": "train_only_mean_with_observation_mask",
@@ -628,6 +752,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gradient-checkpointing", action="store_true")
     parser.add_argument("--min-observed-fraction", type=float, default=0.0)
     parser.add_argument(
+        "--skill-every-epochs",
+        type=int,
+        default=1,
+        help="Sample forecasts every N epochs and select on them; 0 selects on validation loss",
+    )
+    parser.add_argument("--skill-windows", type=int, default=4)
+    parser.add_argument("--skill-ensemble-size", type=int, default=2)
+    parser.add_argument("--skill-integration-steps", type=int, default=8)
+    parser.add_argument(
         "--output",
         default="download/flow-matching/monthly-v1/climate-flow-monthly-v1.pt",
     )
@@ -660,6 +793,10 @@ def main(argv: list[str] | None = None) -> int:
         num_workers=args.num_workers,
         gradient_checkpointing=args.gradient_checkpointing,
         min_observed_fraction=args.min_observed_fraction,
+        skill_every_epochs=args.skill_every_epochs,
+        skill_windows=args.skill_windows,
+        skill_ensemble_size=args.skill_ensemble_size,
+        skill_integration_steps=args.skill_integration_steps,
     )
     print(path)
     return 0
