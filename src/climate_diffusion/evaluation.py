@@ -79,6 +79,13 @@ def _error_metrics(
     }
 
 
+def weighted_rmse(
+    prediction: np.ndarray, target: np.ndarray, weights: np.ndarray | None = None
+) -> float:
+    """Area-weighted RMSE, shared by held-out evaluation and training selection."""
+    return _error_metrics(prediction, target, weights)["rmse"]
+
+
 def _anomaly_correlation(
     prediction: np.ndarray,
     target: np.ndarray,
