@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 from .config import FlowModelConfig
-from .data import load_auxiliary_states, load_monthly_archive
+from .data import load_auxiliary_states, load_monthly_archive, positional_grid
 from .model import MonthlyLatentFlow
 from .validation import require_finite_numpy, require_finite_tensor, require_no_inf_numpy
 
@@ -54,6 +54,16 @@ class LatentFlowForecaster:
         if bool((self.state_scale <= 0).any()) or bool((self.auxiliary_scale <= 0).any()):
             raise ValueError("Checkpoint normalization scales must be positive")
         self.schema = payload["schema"]
+        self.coordinates = None
+        if self.config.positional_channels:
+            planes = positional_grid(self.schema)
+            if planes is None:
+                raise ValueError(
+                    "Checkpoint encodes positional channels but its schema has no grid"
+                )
+            self.coordinates = torch.as_tensor(
+                planes, dtype=torch.float32, device=self.device
+            ).unsqueeze(0)
         self.training_metadata = payload.get("training", {})
         self.checkpoint_format = str(payload["format"])
         self.checkpoint_sha256 = self._verify_manifest()
@@ -175,6 +185,7 @@ class LatentFlowForecaster:
                         integration_steps=integration_steps,
                         generator=generator,
                         history_auxiliary=model_auxiliary,
+                        coordinates=self.coordinates,
                     )[0]
                 else:
                     prediction = self.model.sample(
@@ -182,6 +193,7 @@ class LatentFlowForecaster:
                         integration_steps=integration_steps,
                         generator=generator,
                         history_auxiliary=model_auxiliary,
+                        coordinates=self.coordinates,
                     )[0]
                 member_outputs.append(prediction)
                 member_history = torch.cat(

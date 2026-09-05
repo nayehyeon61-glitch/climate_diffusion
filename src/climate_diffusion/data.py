@@ -488,6 +488,30 @@ def load_auxiliary_states(path: str | Path, schema: dict[str, Any]) -> np.ndarra
     return values
 
 
+POSITIONAL_CHANNEL_NAMES = ("sin_lat", "cos_lon", "sin_lon")
+
+
+def positional_grid(schema: dict[str, Any]) -> np.ndarray | None:
+    """Static ``[3, lat, lon]`` coordinate planes for a spatial archive.
+
+    A randomly cropped patch is otherwise indistinguishable between the equator
+    and a pole, though the physics is not. Longitude is encoded as a sine/cosine
+    pair so the dateline carries no discontinuity.
+    """
+    if schema.get("layout") != "spatial":
+        return None
+    latitudes = np.asarray(schema["coords"]["lat"], dtype=np.float32)
+    longitudes = np.asarray(schema["coords"]["lon"], dtype=np.float32)
+    lat_radians = np.deg2rad(latitudes)[:, None]
+    lon_radians = np.deg2rad(longitudes)[None, :]
+    height, width = len(latitudes), len(longitudes)
+    planes = np.empty((3, height, width), dtype=np.float32)
+    planes[0] = np.broadcast_to(np.sin(lat_radians), (height, width))
+    planes[1] = np.broadcast_to(np.cos(lon_radians), (height, width))
+    planes[2] = np.broadcast_to(np.sin(lon_radians), (height, width))
+    return planes
+
+
 def load_observed_fraction(
     path: str | Path, states: np.ndarray, schema: dict[str, Any]
 ) -> np.ndarray | None:
@@ -555,11 +579,15 @@ class MonthlyWindowDataset(Dataset):
         patch_size: tuple[int, int] | None = None,
         random_crop: bool = False,
         observed_fraction: np.ndarray | None = None,
+        coordinates: np.ndarray | None = None,
     ):
         if min(history_months, lead_months) < 1:
             raise ValueError("history_months and lead_months must be positive")
         self.states = states
         self.observed_fraction = observed_fraction
+        self.coordinates = (
+            None if coordinates is None else np.asarray(coordinates, dtype=np.float32)
+        )
         self.mean = None if mean is None else np.asarray(mean, dtype=np.float32)
         self.scale = None if scale is None else np.asarray(scale, dtype=np.float32)
         self.observation_mask = observation_mask
@@ -628,6 +656,7 @@ class MonthlyWindowDataset(Dataset):
         target = np.asarray(self.states[target_index], dtype=np.float32)
         history_mask = self._mask_slice(slice(start, start + self.history_months))
         target_mask = self._mask_slice(target_index)
+        coordinates = self.coordinates
         require_no_inf_numpy(history, f"history window start={start}")
         require_no_inf_numpy(target, f"target window start={start}")
         if self.mean is not None and self.scale is not None:
@@ -656,11 +685,19 @@ class MonthlyWindowDataset(Dataset):
             target_mask = np.take(
                 target_mask[..., top : top + patch_height, :], lon_index, axis=-1
             )
+            if coordinates is not None:
+                # The crop is what tells the model where on the globe it is, so
+                # the coordinate planes have to follow it exactly.
+                coordinates = np.take(
+                    coordinates[..., top : top + patch_height, :], lon_index, axis=-1
+                )
         item = {
             "history": torch.as_tensor(history.copy(), dtype=torch.float32),
             "target": torch.as_tensor(target.copy(), dtype=torch.float32),
             "target_mask": torch.as_tensor(target_mask.copy(), dtype=torch.bool),
         }
+        if coordinates is not None:
+            item["coordinates"] = torch.as_tensor(coordinates.copy(), dtype=torch.float32)
         if self.auxiliary_states is not None:
             auxiliary = np.asarray(
                 self.auxiliary_states[start : start + self.history_months],

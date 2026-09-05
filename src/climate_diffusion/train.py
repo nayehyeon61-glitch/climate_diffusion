@@ -19,6 +19,7 @@ from .data import (
     load_monthly_archive,
     load_observation_mask,
     load_observed_fraction,
+    positional_grid,
 )
 from .evaluation import weighted_rmse
 from .model import MonthlyLatentFlow
@@ -167,6 +168,10 @@ def _epoch(
             history_auxiliary = batch.get("history_auxiliary")
             if history_auxiliary is not None:
                 history_auxiliary = history_auxiliary.to(device)
+            coordinates = batch.get("coordinates")
+            if coordinates is not None:
+                # Collated per sample, but identical across the batch.
+                coordinates = coordinates[0].to(device)
             # A seeded generator makes every evaluation pass over the same
             # weights return the same number, so "best epoch" is a real
             # comparison rather than a draw from the flow-matching noise.
@@ -186,6 +191,7 @@ def _epoch(
                     history_auxiliary=history_auxiliary,
                     target_mask=target_mask,
                     generator=batch_generator,
+                    coordinates=coordinates,
                 )
             if training:
                 scaled_loss = losses["loss"] / gradient_accumulation_steps
@@ -287,6 +293,9 @@ def forecast_skill(
             auxiliary = item.get("history_auxiliary")
             if auxiliary is not None:
                 auxiliary = auxiliary.unsqueeze(0).to(device)
+            coordinates = item.get("coordinates")
+            if coordinates is not None:
+                coordinates = coordinates.unsqueeze(0).to(device)
             members = []
             for member in range(ensemble_size):
                 generator = torch.Generator(device=device)
@@ -297,6 +306,7 @@ def forecast_skill(
                         integration_steps=integration_steps,
                         generator=generator,
                         history_auxiliary=auxiliary,
+                        coordinates=coordinates,
                     )[0]
                     .detach()
                     .cpu()
@@ -405,6 +415,7 @@ def train_flow_model(
     skill_windows: int = 4,
     skill_ensemble_size: int = 2,
     skill_integration_steps: int = 8,
+    positional_channels: int = 3,
 ) -> Path:
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -439,6 +450,7 @@ def train_flow_model(
         raise ValueError("gradient_accumulation_steps must be positive")
     observation_mask = load_observation_mask(archive_path, states, schema)
     observed_fraction = load_observed_fraction(archive_path, states, schema)
+    coordinates = positional_grid(schema) if positional_channels else None
     if layout == "spatial":
         state_mean, state_scale = _train_only_statistics(
             states,
@@ -501,6 +513,7 @@ def train_flow_model(
         auxiliary_scale=auxiliary_scale,
         patch_size=patch_size,
         observed_fraction=observed_fraction,
+        coordinates=coordinates,
         random_crop=layout == "spatial",
     )
     validation_dataset = MonthlyWindowDataset(
@@ -518,6 +531,7 @@ def train_flow_model(
         auxiliary_scale=auxiliary_scale,
         patch_size=patch_size,
         observed_fraction=observed_fraction,
+        coordinates=coordinates,
         random_crop=False,
     )
     generator = torch.Generator().manual_seed(seed)
@@ -553,6 +567,7 @@ def train_flow_model(
         operator_modes_lon=operator_modes_lon,
         auxiliary_dim=auxiliary_dim,
         gradient_checkpointing=gradient_checkpointing,
+        positional_channels=positional_channels if layout == "spatial" else 0,
     )
     loss_config = FlowLossConfig()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -765,6 +780,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skill-ensemble-size", type=int, default=2)
     parser.add_argument("--skill-integration-steps", type=int, default=8)
     parser.add_argument(
+        "--positional-channels",
+        type=int,
+        choices=(0, 3),
+        default=3,
+        help="Static sin(lat)/cos(lon)/sin(lon) planes on the encoder input",
+    )
+    parser.add_argument(
         "--output",
         default="download/flow-matching/monthly-v1/climate-flow-monthly-v1.pt",
     )
@@ -801,6 +823,7 @@ def main(argv: list[str] | None = None) -> int:
         skill_windows=args.skill_windows,
         skill_ensemble_size=args.skill_ensemble_size,
         skill_integration_steps=args.skill_integration_steps,
+        positional_channels=args.positional_channels,
     )
     print(path)
     return 0

@@ -32,9 +32,12 @@ train/validation/test 분리 모두 재현 검증에서 통과했다.
 | P0-3 validation loss 재샘플링 | ✅ 수정 | 6회 반복 편차 5.5% → **0.0** (bit-identical) |
 | P1-4 flow 항 detach 없음 | ✅ 수정 | `d(flow loss)/d(target input)` = **0.0** |
 | P1-7 tile마다 독립 noise | ✅ 수정 | seam에서 눌리던 spread가 전역 샘플링과 일치 (0.99배) |
-| P1-5, P1-6, P2-8, P2-9 | 미수정 | 아래 4절 참고 |
+| P1-5 학습 중 예보 성능 미측정 | ✅ 수정 | 샘플링 기반 skill로 `best.pt` 선택. loss 기준과 실제로 다른 epoch을 고름 |
+| P1-6 위도 가중·계절 baseline 없음 | ✅ 수정 | cos(lat) 가중 + 월별 climatology(3.4배 어려운 baseline) + ACC |
+| P2-8 위치 정보 없음 | ✅ 수정 | sin(lat)/cos(lon)/sin(lon) 정적 채널, patch·tile 크롭 추종 |
+| P2-9 시작 I/O 낭비 | ✅ 수정 | window 필터 mask 읽기 435,456 cells → **0**, 로드 시 전량 Inf 스캔 제거 |
 
-테스트는 43 passed (수정 전 33 passed).
+**10건 전부 수정 완료.** 테스트는 74 passed (최초 33 passed).
 
 ## 2. 통과한 항목 (재현 검증됨)
 
@@ -208,9 +211,27 @@ velocity MSE가 낮다고 샘플 품질이 좋다는 보장은 없다.
 
 모델이 persistence보다 17배 나쁘지만 평가는 그냥 통과한다. skill score도, 회귀 게이트도 없다.
 
-**수정 방향**: 몇 epoch마다 validation 윈도우 일부에 대해 작은 ensemble 샘플링 rollout을
-돌려 normalized RMSE와 persistence 대비 skill score를 metric에 기록하고, 그 값으로
-`best.pt`를 고른다. 평가 JSON에는 `skill_vs_persistence = 1 - rmse/persistence_rmse`를 추가한다.
+**✅ 수정 완료**: `train.forecast_skill()`이 validation 윈도우 앞쪽 N개에 대해 추론과 동일한
+방식으로 작은 ensemble을 샘플링하고, ensemble 평균을 **같은 셀에서** persistence와 비교한다.
+위도 가중은 그 윈도우가 실제로 내주는 center crop 기준으로 계산한다(`patch_latitude_weights`).
+`skill_every_epochs`마다 돌며 epoch metric·체크포인트에 기록되고 선택을 주도한다.
+측정한 epoch만 후보가 되며, `skill_every_epochs=0`이면 기존 validation loss 선택으로 돌아간다.
+
+**두 기준이 실제로 다른 epoch을 고른다.** 합성 계절 아카이브에서 4 epoch 학습:
+
+```
+epoch=1 validation=2.375828  forecast_rmse=0.727721  skill=+0.0360
+epoch=2 validation=2.365888  forecast_rmse=0.727454  skill=+0.0363
+epoch=3 validation=2.355011  forecast_rmse=0.726934  skill=+0.0370   ← 예보 최적
+epoch=4 validation=2.349326  forecast_rmse=0.728977  skill=+0.0343   ← loss 최적
+```
+
+validation loss는 매 epoch 단조 감소해 epoch 4를 고르지만, 실제 예보 성능은 epoch 3이 최적이다.
+
+기본값은 의도적으로 저렴하다 — 4 windows / 2 members / 8 steps, RunPod 프로파일은 2 windows —
+그리고 모든 값이 양쪽 CLI에 노출된다.
+
+회귀 테스트 6건: `tests/test_forecast_skill.py`.
 
 ### P1-6. 평가에 위도 가중치와 계절 climatology가 없다
 
@@ -227,9 +248,31 @@ velocity MSE가 낮다고 샘플 품질이 좋다는 보장은 없다.
 - test 윈도우는 아카이브 끝의 연속 구간 하나라서 계절이 편향되고 표본이 강하게 자기상관인데,
   신뢰구간이나 부트스트랩이 없다.
 
-`TRAINING_MANUAL.md:158`에 위도 가중 RMSE/ACC가 follow-up으로 이미 적혀 있으니 인지는 되어 있다.
-다만 "학습 evaluation이 잘 되어 있는가"라는 질문에 대한 답으로는, **현재 숫자는 전역 예보 성능을
-대표하지 않는다**는 점을 분명히 해둔다.
+`TRAINING_MANUAL.md:158`에 위도 가중 RMSE/ACC가 follow-up으로 이미 적혀 있으니 인지는 되어 있었다.
+
+**✅ 수정 완료**: RMSE/MAE/bias/CRPS 모두 `cos(lat)` 가중을 받는다(vector 아카이브는 격자가
+없으므로 제외). 극 행은 정확히 0이 되므로 `1e-6`으로 clip해 표현 가능하게만 남긴다.
+학습 월만 사용하는 월별(month-of-year) climatology를 추가했고, 기존 전 기간 평균 baseline도
+비교용으로 남겼다. ACC(그 climatology 기준), `spread_skill_ratio`,
+`skill_vs_persistence`, `skill_vs_seasonal_climatology`를 함께 낸다. 리포트 형식은
+`climate_diffusion.evaluation.v2`.
+
+**baseline 교체 효과가 크다.** 합성 계절 아카이브에서:
+
+```
+climatology_rmse           1.4297   ← 전 기간 평균 (기존)
+seasonal_climatology_rmse  0.4218   ← 월별 climatology (신규, 3.4배 어려움)
+모델 rmse                  1.3244
+```
+
+기존 baseline 기준으로는 모델이 "climatology를 이겼다"(1.32 < 1.43)고 나오지만,
+제대로 된 계절 baseline 대비로는 2.1배 나쁘다. 과대평가가 실제로 일어나고 있었다.
+
+아직 없는 것: rank histogram, 그리고 test 윈도우가 아카이브 끝의 연속 구간 하나라
+계절 편향·자기상관이 있는데 신뢰구간/부트스트랩이 없다는 점은 그대로다.
+
+회귀 테스트 9건: `tests/test_evaluation_metrics.py`. 극지 오차가 적도 오차의 1/1000 미만으로
+계산되는지, 가중 없는 경로가 기존 평균과 정확히 일치하는지 포함.
 
 ### P1-7. tiled 샘플링은 tile마다 독립 noise를 뽑는다
 
@@ -280,7 +323,27 @@ latent 좌표 변환은 downsample factor `2**levels`로 나눈 값을 쓴다. �
 보고는 그것이 적도인지 극지인지 알 수 없는데, 물리는 위도에 크게 의존한다.
 `data.py:605`의 `random_crop`은 위도 시작점을 무작위로 뽑으므로 이 모호성이 학습 전체에 퍼진다.
 
-**수정 방향**: `sin(lat)`, `cos(lon)`, `sin(lon)` 정적 채널을 입력에 concat한다.
+**✅ 수정 완료**: `sin(lat)`, `cos(lon)`, `sin(lon)` 정적 채널을 encoder 입력에 concat한다.
+경도를 sin/cos 쌍으로 넣으므로 날짜변경선에 불연속이 없다.
+
+핵심은 **좌표가 크롭을 따라가야 한다**는 점이다. patch가 무작위로 잘리므로 좌표를 모델이
+스스로 알 수 없다. 그래서 좌표는 명시적 인자로 흐른다:
+- 학습: `MonthlyWindowDataset`이 history/target과 **동일한 크롭**을 좌표에도 적용해 함께 내보낸다.
+- tiled 추론: 좌표를 history 채널에 실어 `tiled_apply`의 기존 크롭 로직이 그대로 자르게 하고,
+  tile 안에서 다시 분리한다. tile마다 자기 위치의 좌표를 받는지 회귀 테스트로 고정했다
+  (날짜변경선을 넘는 wrap 포함).
+
+encoder 입력만 넓어지고 decoder 출력은 데이터 채널 그대로다(좌표는 재구성 대상이 아니다).
+`SpatialAutoencoder`에 `input_channels`를 추가해 양 끝을 분리했고, `tiled_apply`는 이제
+출력 채널 수를 입력이 아니라 **첫 예측**에서 가져온다.
+
+**구버전 호환**: `positional_channels` 기본값은 0이라 키가 없는 v1/v2/v3 체크포인트는
+기존 구조 그대로 로드된다(확인함). 신규 학습은 양쪽 CLI에서 3이 기본이며 `--positional-channels 0`으로 끌 수 있다.
+
+운영 형상(721×1440, patch 256, overlap 64, 32 tiles)에서 좌표를 실은 tiled 샘플링을 직접 돌려 확인했다.
+
+회귀 테스트 9건: `tests/test_positional_channels.py`. 같은 필드를 극지 좌표와 적도 좌표로
+인코딩했을 때 latent가 달라지는지(= 모델이 위도를 실제로 구분하는지)를 포함한다.
 
 ### P2-9. `observed_fraction.npy`를 만들어놓고 쓰지 않는다 — 시작 I/O 낭비
 
@@ -305,6 +368,20 @@ resume-safe 설계가 실제로는 재시작마다 100GB+ 스캔을 앞에 달�
 `_require_no_inf_monthly`의 전량 스캔은 아카이브 생성 시 한 번만 하고 schema에
 `inf_checked: true`로 기록해 로드 때는 건너뛴다.
 
+**✅ 수정 완료**: `MonthlyWindowDataset`이 기록된 fraction으로 판정한다. 근사가 아니라 **동일한
+값**이다 — 저장된 각 값이 이미 그 월·채널의 공간 평균이고 모든 월이 같은 셀 수를 덮는다.
+임계값 0.0/0.5/0.8/0.95에서 두 경로가 **완전히 같은 윈도우를 고르는지** parametrized 테스트로
+고정했고, 접근하면 예외를 던지는 mask를 넘겨 빠른 경로가 mask를 아예 건드리지 않는지도 확인했다.
+
+Inf 전량 스캔은 두 writer가 이미 월별로 검사하며 쓰므로 아카이브가 `inf_checked`를 기록하고
+로드는 그것을 신뢰한다. 이 키가 없는 기존 아카이브는 예전대로 스캔한다(테스트로 고정).
+
+실측: 소형 아카이브에서 윈도우 필터가 읽는 mask cell이 **435,456 → 0**.
+운영 형상(29채널·721×1440·480개월·history 6) 환산으로 mask 재스캔 ≈ 93 GiB,
+Inf 스캔 ≈ 54 GiB가 사라지고 0.36 MiB 읽기로 대체된다.
+
+회귀 테스트 7건: `tests/test_archive_io.py`.
+
 ### P2-10. PR #1의 CI가 red이고 PR 본문의 테스트 수치가 낡았다
 
 ```
@@ -325,20 +402,24 @@ PR #1은 `main`과도 conflict(`mergeable_state: dirty`) 상태다. `main`이 `3
 
 ## 4. 남은 작업
 
-P0-1 / P0-2 / P0-3 / P1-4 / P1-7 / P2-10은 이 브랜치에서 수정했다. 남은 것은 순서대로:
+보고한 10건은 모두 이 브랜치에서 수정했다. 이후 과제로 남는 것:
 
-1. **P1-5** 학습 중 샘플링 기반 skill 지표 — 이게 있어야 `best.pt` 선택이 예보 성능과 연결된다.
-   P0-3 수정은 비교를 재현 가능하게 만들었을 뿐, 무엇을 비교하는지는 바꾸지 않았다.
-2. **P1-6** 위도 가중 RMSE/ACC + 월별 climatology baseline — 현재 숫자는 전역 예보 성능을
-   대표하지 않는다.
-3. **P2-8** 위도/경도 정적 채널. P0-2를 "경도 전 폭 유지" 방식으로 다시 풀면 함께 줄어든다.
-4. **P2-9** `observed_fraction.npy` 활용 + 로드 시 전량 Inf 스캔 제거 (재시작마다 ~137 GiB).
+1. **rank histogram과 신뢰구간.** test 윈도우가 아카이브 끝의 연속 구간 하나라 계절이 편향되고
+   표본이 강하게 자기상관인데, 부트스트랩 신뢰구간이 없다. ensemble calibration도 spread-skill
+   비율 하나로만 본다.
+2. **`SpectralOperator2d`의 patch 주기성 가정.** P0-2는 conv padding만 고쳤다. `spatial_operator`
+   backend는 patch에 `rfft2`를 걸어 여전히 patch를 주기 신호로 본다. FNO 계열의 관행이라
+   별도 설계 판단이 필요하다. `spatial_conv`는 이 경로를 타지 않는다.
+3. **경도 전 폭 patch 전략.** 경도를 자르지 않고 위도만 자르면 P0-2의 seam과 위 spectral 문제가
+   원천 제거되지만 patch 메모리가 커진다.
+4. **실데이터 검증.** 모든 수치는 합성 아카이브에서 얻었다. ERA5 실데이터와 GPU 학습으로
+   재확인이 필요하다.
 
 ## 5. 재현 방법
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e '.[test,io]'
-.venv/bin/python -m pytest -q          # 43 passed
+.venv/bin/python -m pytest -q          # 74 passed
 ```
 
 tiled 경로는 운영 형상(721×1440, patch 256, overlap 64, levels 3 → 32 tiles)에서도

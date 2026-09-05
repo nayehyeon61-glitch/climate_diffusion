@@ -22,6 +22,7 @@ from .data import (
     load_monthly_archive,
     load_observation_mask,
     load_observed_fraction,
+    positional_grid,
 )
 from .model import MonthlyLatentFlow
 from .train import (
@@ -166,6 +167,7 @@ def train_runpod_spatial_flow(
     skill_windows: int = 2,
     skill_ensemble_size: int = 2,
     skill_integration_steps: int = 8,
+    positional_channels: int = 3,
 ) -> Path:
     if backend not in {"spatial_conv", "spatial_operator"}:
         raise ValueError("RunPod spatial trainer requires spatial_conv or spatial_operator")
@@ -214,6 +216,7 @@ def train_runpod_spatial_flow(
     train_raw_indices = list(range(train_start, train_end))
     observation_mask = load_observation_mask(archive, states, schema)
     observed_fraction = load_observed_fraction(archive, states, schema)
+    coordinates = positional_grid(schema) if positional_channels else None
     state_mean, state_scale = _train_only_statistics(
         states,
         train_raw_indices,
@@ -261,6 +264,7 @@ def train_runpod_spatial_flow(
         auxiliary_scale=auxiliary_scale,
         patch_size=patch_size,
         observed_fraction=observed_fraction,
+        coordinates=coordinates,
         random_crop=True,
     )
     validation_dataset = MonthlyWindowDataset(
@@ -278,6 +282,7 @@ def train_runpod_spatial_flow(
         auxiliary_scale=auxiliary_scale,
         patch_size=patch_size,
         observed_fraction=observed_fraction,
+        coordinates=coordinates,
         random_crop=False,
     )
     loader_generator = torch.Generator().manual_seed(seed)
@@ -313,6 +318,7 @@ def train_runpod_spatial_flow(
         operator_modes_lon=operator_modes_lon,
         auxiliary_dim=auxiliary_dim,
         gradient_checkpointing=gradient_checkpointing,
+        positional_channels=positional_channels,
     )
     loss_config = FlowLossConfig()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -512,6 +518,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skill-windows", type=int, default=2)
     parser.add_argument("--skill-ensemble-size", type=int, default=2)
     parser.add_argument("--skill-integration-steps", type=int, default=8)
+    parser.add_argument("--positional-channels", type=int, choices=(0, 3), default=3)
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--no-mixed-precision", action="store_true")
     parser.add_argument("--no-gradient-checkpointing", action="store_true")
@@ -550,6 +557,7 @@ def main(argv: list[str] | None = None) -> int:
         skill_windows=args.skill_windows,
         skill_ensemble_size=args.skill_ensemble_size,
         skill_integration_steps=args.skill_integration_steps,
+        positional_channels=args.positional_channels,
     )
     print(path)
     return 0
