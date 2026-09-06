@@ -10,3 +10,4 @@ outputs/
 *.npz
 *.nc
 *.zarr/
+download/

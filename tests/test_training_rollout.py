@@ -2,6 +2,7 @@ import json
 
 import numpy as np
 import pandas as pd
+import torch
 import xarray as xr
 
 from climate_diffusion.data import prepare_monthly_archive
@@ -67,3 +68,59 @@ def test_one_epoch_checkpoint_runs_as_monthly_weather_replacement(tmp_path):
     metrics = json.loads(metrics_path.read_text())
     assert metrics["test_windows"] == manifest["split"]["test"]
     assert np.isfinite(metrics["normalized_overall"]["crps"])
+
+
+def test_recency_weighting_and_expanded_autoencoder_are_recorded(tmp_path):
+    times = pd.date_range("2015-01-01", periods=40, freq="MS")
+    rng = np.random.default_rng(0)
+    fields = xr.Dataset(
+        {
+            "msl": (
+                ("time", "lat", "lon"),
+                (1000 + rng.normal(size=(40, 1, 2))).astype(np.float32),
+            )
+        },
+        coords={"time": times, "lat": [30.0], "lon": [120.0, 140.0]},
+    )
+    fields_path = tmp_path / "fields.nc"
+    fields.to_netcdf(fields_path, engine="scipy")
+    archive, _ = prepare_monthly_archive(
+        fields_path,
+        tmp_path / "monthly.npz",
+        target_lat_points=1,
+        target_lon_points=2,
+    )
+    checkpoint = train_flow_model(
+        archive,
+        tmp_path / "flow.pt",
+        history_months=3,
+        latent_dim=4,
+        hidden_dim=8,
+        autoencoder_hidden_dim=16,
+        autoencoder_blocks=2,
+        autoencoder_dropout=0.1,
+        epochs=1,
+        batch_size=4,
+        validation_fraction=0.25,
+        test_fraction=0.15,
+        recency_halflife=5.0,
+        normalization_states=12,
+    )
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    assert payload["model_config"]["autoencoder_blocks"] == 2
+    assert payload["model_config"]["autoencoder_hidden_dim"] == 16
+    assert payload["training"]["recency_halflife"] == 5.0
+    start, end = payload["training"]["normalization_span"]
+    assert end - start == 12
+
+    metadata = json.loads(checkpoint.with_suffix(".metadata.json").read_text())
+    assert metadata["autoencoder_parameter_count"] < metadata["parameter_count"]
+
+    # A frozen checkpoint of the expanded model still loads and samples.
+    forecaster = LatentFlowForecaster(checkpoint, device="cpu")
+    assert forecaster.config.autoencoder_blocks == 2
+    prediction = forecaster.forecast(
+        np.zeros((3, forecaster.config.state_dim), dtype=np.float32),
+        integration_steps=2,
+    )
+    assert np.isfinite(prediction).all()

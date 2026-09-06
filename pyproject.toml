@@ -11,6 +11,7 @@ dependencies = [
   "numpy>=1.24",
   "pandas>=2",
   "torch>=2.1",
+  "torchdiffeq>=0.2",
   "xarray>=2023.1",
 ]
 
@@ -22,6 +23,7 @@ test = ["pytest>=7", "scipy>=1.10"]
 prepare-climate-monthly-data = "climate_diffusion.data:main"
 prepare-climate-fixed-step-data = "climate_diffusion.fixed_step_data:main"
 train-climate-flow = "climate_diffusion.train:main"
+train-climate-dynamics = "climate_diffusion.train_dynamics:main"
 forecast-climate-flow = "climate_diffusion.inference:main"
 evaluate-climate-flow = "climate_diffusion.evaluation:main"
 
