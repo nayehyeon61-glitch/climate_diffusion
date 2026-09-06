@@ -1,0 +1,219 @@
+{
+  "archive": "data/era5_monthly_states_full.npz",
+  "ensemble_size": 32,
+  "integration_steps": 32,
+  "variant_set": "expanded-ae",
+  "best_variant": "expanded-ae/recency-legacy-ae",
+  "variants": {
+    "expanded-ae/legacy-ae": {
+      "label": "Baseline · uniform · AE 1.2M",
+      "model_config": {
+        "state_dim": 2048,
+        "history_months": 6,
+        "latent_dim": 64,
+        "hidden_dim": 256,
+        "time_embedding_dim": 32,
+        "autoencoder_hidden_dim": null,
+        "autoencoder_blocks": 0,
+        "autoencoder_dropout": 0.0
+      },
+      "recency_halflife": null,
+      "latent_normalization": false,
+      "select_by": "loss",
+      "loss_config": {
+        "reconstruction_weight": 1.0,
+        "flow_weight": 1.0,
+        "latent_regularization_weight": 0.0001
+      },
+      "parameter_count": 1636480,
+      "autoencoder_parameter_count": 1216064,
+      "best_epoch": 1791,
+      "best_validation_loss": 0.4424159526824951,
+      "test": {
+        "mae": 0.5955697298049927,
+        "rmse": 0.8228728771209717,
+        "bias": -0.046142011880874634,
+        "crps": 0.47763256669044496,
+        "ensemble_spread": 0.308646586338679,
+        "persistence_rmse": 0.983686089515686,
+        "climatology_rmse": 1.0268542766571045
+      },
+      "autoencoder_reconstruction_rmse": 0.6896986961364746,
+      "latent_std": 0.10367874801158905,
+      "by_variable_raw_units": {
+        "msl": 469.8929443359375,
+        "t2m": 1.9922404289245605,
+        "u10": 1.3437529802322388,
+        "v10": 1.077513337135315
+      }
+    },
+    "expanded-ae/recency-legacy-ae": {
+      "label": "Recency · AE 1.2M",
+      "model_config": {
+        "state_dim": 2048,
+        "history_months": 6,
+        "latent_dim": 64,
+        "hidden_dim": 256,
+        "time_embedding_dim": 32,
+        "autoencoder_hidden_dim": null,
+        "autoencoder_blocks": 0,
+        "autoencoder_dropout": 0.0
+      },
+      "recency_halflife": 200.0,
+      "latent_normalization": false,
+      "select_by": "loss",
+      "loss_config": {
+        "reconstruction_weight": 1.0,
+        "flow_weight": 1.0,
+        "latent_regularization_weight": 0.0001
+      },
+      "parameter_count": 1636480,
+      "autoencoder_parameter_count": 1216064,
+      "best_epoch": 825,
+      "best_validation_loss": 0.4295885980129242,
+      "test": {
+        "mae": 0.5347396731376648,
+        "rmse": 0.7365028858184814,
+        "bias": -0.06522403657436371,
+        "crps": 0.4361350993315379,
+        "ensemble_spread": 0.2665573877096176,
+        "persistence_rmse": 0.983686089515686,
+        "climatology_rmse": 1.0268542766571045
+      },
+      "autoencoder_reconstruction_rmse": 0.667525589466095,
+      "latent_std": 0.09873361885547638,
+      "by_variable_raw_units": {
+        "msl": 389.70599365234375,
+        "t2m": 1.7953475713729858,
+        "u10": 1.188999056816101,
+        "v10": 1.0084842443466187
+      }
+    },
+    "expanded-ae/recency-ae-medium": {
+      "label": "Recency · AE 512×3 · 8.5M",
+      "model_config": {
+        "state_dim": 2048,
+        "history_months": 6,
+        "latent_dim": 128,
+        "hidden_dim": 256,
+        "time_embedding_dim": 32,
+        "autoencoder_hidden_dim": 512,
+        "autoencoder_blocks": 3,
+        "autoencoder_dropout": 0.1
+      },
+      "recency_halflife": 200.0,
+      "latent_normalization": false,
+      "select_by": "loss",
+      "loss_config": {
+        "reconstruction_weight": 1.0,
+        "flow_weight": 1.0,
+        "latent_regularization_weight": 0.0001
+      },
+      "parameter_count": 9042688,
+      "autoencoder_parameter_count": 8540288,
+      "best_epoch": 347,
+      "best_validation_loss": 0.272122198343277,
+      "test": {
+        "mae": 0.7055396437644958,
+        "rmse": 0.877866268157959,
+        "bias": -0.06828717887401581,
+        "crps": 0.5171810412406921,
+        "ensemble_spread": 0.5916820581754049,
+        "persistence_rmse": 0.983686089515686,
+        "climatology_rmse": 1.0268542766571045
+      },
+      "autoencoder_reconstruction_rmse": 0.4978336989879608,
+      "latent_std": 0.054234255105257034,
+      "by_variable_raw_units": {
+        "msl": 419.59881591796875,
+        "t2m": 4.5849151611328125,
+        "u10": 1.3466570377349854,
+        "v10": 1.1647298336029053
+      }
+    },
+    "expanded-ae/recency-ae-large": {
+      "label": "Recency · AE 768×4 · 22M",
+      "model_config": {
+        "state_dim": 2048,
+        "history_months": 6,
+        "latent_dim": 128,
+        "hidden_dim": 256,
+        "time_embedding_dim": 32,
+        "autoencoder_hidden_dim": 768,
+        "autoencoder_blocks": 4,
+        "autoencoder_dropout": 0.1
+      },
+      "recency_halflife": 200.0,
+      "latent_normalization": false,
+      "select_by": "loss",
+      "loss_config": {
+        "reconstruction_weight": 1.0,
+        "flow_weight": 1.0,
+        "latent_regularization_weight": 0.0001
+      },
+      "parameter_count": 22756608,
+      "autoencoder_parameter_count": 22254208,
+      "best_epoch": 201,
+      "best_validation_loss": 0.3133339464664459,
+      "test": {
+        "mae": 0.7593671679496765,
+        "rmse": 0.9357946515083313,
+        "bias": -0.08770480006933212,
+        "crps": 0.5610287769635518,
+        "ensemble_spread": 0.6180231062571208,
+        "persistence_rmse": 0.983686089515686,
+        "climatology_rmse": 1.0268542766571045
+      },
+      "autoencoder_reconstruction_rmse": 0.5068346858024597,
+      "latent_std": 0.05307527258992195,
+      "by_variable_raw_units": {
+        "msl": 435.96417236328125,
+        "t2m": 5.382554531097412,
+        "u10": 1.4079805612564087,
+        "v10": 1.2152259349822998
+      }
+    },
+    "expanded-ae/recency-ae-xlarge": {
+      "label": "Recency · AE 1024×6 · 55M",
+      "model_config": {
+        "state_dim": 2048,
+        "history_months": 6,
+        "latent_dim": 192,
+        "hidden_dim": 256,
+        "time_embedding_dim": 32,
+        "autoencoder_hidden_dim": 1024,
+        "autoencoder_blocks": 6,
+        "autoencoder_dropout": 0.1
+      },
+      "recency_halflife": 200.0,
+      "latent_normalization": false,
+      "select_by": "loss",
+      "loss_config": {
+        "reconstruction_weight": 1.0,
+        "flow_weight": 1.0,
+        "latent_regularization_weight": 0.0001
+      },
+      "parameter_count": 55573376,
+      "autoencoder_parameter_count": 54988992,
+      "best_epoch": 381,
+      "best_validation_loss": 0.40198850631713867,
+      "test": {
+        "mae": 0.7979333400726318,
+        "rmse": 0.9784453511238098,
+        "bias": -0.06624596565961838,
+        "crps": 0.5852177286148071,
+        "ensemble_spread": 0.658369832833608,
+        "persistence_rmse": 0.983686089515686,
+        "climatology_rmse": 1.0268542766571045
+      },
+      "autoencoder_reconstruction_rmse": 0.5904816389083862,
+      "latent_std": 0.03578302636742592,
+      "by_variable_raw_units": {
+        "msl": 457.9824523925781,
+        "t2m": 5.778995037078857,
+        "u10": 1.4743199348449707,
+        "v10": 1.2679579257965088
+      }
+    }
+  }
+}

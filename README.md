@@ -202,7 +202,13 @@ flow는 N(0, I)에서 출발해 latent로 수송하는데, 확장 AE의 latent s
 prior보다 20-30배 작습니다. 표현력이 큰 decoder일수록 latent를 더 작게 눌러도 되기
 때문입니다. 이 상태에서는 벡터장의 작은 오차도 latent 자체 scale 대비 거대해지고,
 ensemble spread가 0.27에서 0.66으로 부풀며 2 m 기온 계절 진폭이 붕괴합니다
-(`outputs/expanded_ae_timeseries.png`).
+(`docs/figures/expanded_ae_timeseries.png`).
+
+![확장 AE held-out 성능](docs/figures/expanded_ae_skill.png)
+
+![확장 AE 계절 진폭 붕괴](docs/figures/expanded_ae_timeseries.png)
+
+아래 패널에서 확장 AE(노란색)가 2 m 기온 계절 주기를 거의 평평하게 눌러버린 것이 보입니다.
 
 또한 총 loss는 reconstruction 항이 지배하므로(확장 AE에서 84%) best-validation
 checkpoint 선택이 예측 성능이 아니라 압축 성능을 따라갑니다.
@@ -275,6 +281,10 @@ python scripts/visualize_expanded_ae.py --set expanded-ae --ensemble-size 32
 python scripts/visualize_expanded_ae.py --set latent-fix  --ensemble-size 32
 ```
 
+![L/S/E ablation](docs/figures/latent_fix_skill.png)
+
+![수정 후 계절 주기 회복](docs/figures/latent_fix_timeseries.png)
+
 `outputs/`에 세트별로 `<set>_training.png`, `<set>_skill.png`, `<set>_variables.png`,
 `<set>_maps.png`, `<set>_timeseries.png`와 `<set>-summary.json`이 생성됩니다.
 
@@ -312,6 +322,8 @@ validation이 20%를 가져가면서 생긴 구조이며, 온난화 추세 때�
 ```bash
 python scripts/baseline_skill.py --ensemble-size 32
 ```
+
+![제대로 된 기준선 대비 성능](docs/figures/baseline_skill.png)
 
 ## 4. 물리 시간축 latent ODE (dynamics)
 
@@ -400,7 +412,9 @@ python scripts/visualize_dynamics.py --cases 64 --ensemble-size 16
 python scripts/visualize_dynamics.py --cases 48 --ensemble-size 8
 ```
 
-`outputs/dynamics_skill.png`가 결론을 한눈에 보여줍니다.
+`docs/figures/dynamics_skill.png`가 결론을 한눈에 보여줍니다.
+
+![리드 시간별 skill 곡선](docs/figures/dynamics_skill.png)
 
 - 모델 RMSE가 6h부터 720h까지 **0.87 근처에서 평평합니다.** 리드 시간에 따른 변화가 없습니다.
 - persistence는 6h에서 0.44, 720h에서 1.22입니다. 무조건부 기후값은 1.02로 평평합니다.
@@ -431,6 +445,12 @@ python scripts/autoencoder_probe.py --latents 128 512 --kinds mlp conv --epochs 
 
 같은 AE가 전체 dynamics 모델 안에서는 **0.836**이었습니다. 단독으로는 0.30~0.44입니다.
 유효 차원도 단독일 때 445/512로 건강한데 결합 시 128/512로 붕괴합니다.
+
+![AE 단독 probe 대 PCA 하한](docs/figures/autoencoder-probe.png)
+
+![결합 모델 안의 AE 위치](docs/figures/dynamics_autoencoder.png)
+
+두 번째 그림의 마름모가 모두 PCA 곡선 위에 한참 떨어져 있는 것이 결합 학습에서의 붕괴입니다.
 
 **따라서 근본 원인은 AE 용량도, weight decay도, encoder 구조도 아니라 다중 과제 충돌입니다.**
 trajectory loss와 flow matching loss가 "예측하기 쉬운" 저정보 latent를 선호하고, 재구성 항이
@@ -580,6 +600,21 @@ GRU/Transformer와 distribution CE + track MSE double loss만 학습됩니다.
 이렇게 구성하면 novelty는 단순히 강한 모델을 제거하는 데 있지 않고,
 `월 단위 생성적 operator + GPT-conditioned 태풍 history + distribution/track dual
 objective`의 결합과 세 실험군의 정량 비교에서 형성됩니다.
+
+## 결과 그림과 수치
+
+커밋된 그림은 `docs/figures/`, 근거가 되는 요약 수치는 `docs/results/`에 있습니다.
+`outputs/`는 스크립트가 쓰는 작업 디렉터리이며 버전 관리하지 않습니다.
+
+| 그림 | 내용 |
+|---|---|
+| `baseline_skill.png` | 월별 모델 대 persistence / 계절 기후값 / anomaly persistence |
+| `expanded_ae_*.png` | AE 확장 sweep 5종: 학습 곡선, held-out 성능, 변수별, 예보 지도, 시계열 |
+| `latent_fix_*.png` | latent 정규화 / 선택 기준 / 앙상블 CRPS ablation 5종 |
+| `dynamics_skill.png` | 리드 시간별 RMSE 곡선 (6h~720h) |
+| `dynamics_training.png` | dynamics loss 항별 곡선 |
+| `dynamics_autoencoder.png` | 결합 학습 AE 대 선형 PCA 하한 |
+| `autoencoder-probe.png` | AE 단독 학습 대 PCA 하한 (mlp / conv) |
 
 ## 현재 범위와 주의점
 

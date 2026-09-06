@@ -229,8 +229,14 @@ def figure_autoencoder(results: dict[str, dict], floor: dict[int, float],
     latents = sorted(floor)
     axis.plot(latents, [floor[k] for k in latents], color=INK_MUTED,
               marker="o", markersize=5, label="linear PCA floor")
+    # Runs that share a latent width land on the same x; nudge them apart so a
+    # marker cannot hide the ones underneath it.
+    columns: dict[int, int] = {}
     for index, (name, row) in enumerate(results.items()):
-        axis.plot([row["latent_dim"]], [row["autoencoder_reconstruction_rmse"]],
+        seen = columns.get(row["latent_dim"], 0)
+        columns[row["latent_dim"]] = seen + 1
+        axis.plot([row["latent_dim"] * (1.0 + 0.06 * seen)],
+                  [row["autoencoder_reconstruction_rmse"]],
                   marker="D", markersize=8, color=SERIES[index],
                   markeredgecolor=SURFACE, markeredgewidth=1.4,
                   linestyle="none", label=row["label"])
