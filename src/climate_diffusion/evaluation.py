@@ -53,7 +53,19 @@ def evaluate_flow_checkpoint(
         raise ValueError(
             "Checkpoint has no held-out test split; retrain with artifact format v2"
         )
-    history_months = forecaster.config.history_months
+    history_months = forecaster.history_span_steps
+    horizon = forecaster.config.horizon_steps if forecaster.is_dynamics else 1
+    if forecaster.is_dynamics:
+        forecaster.validate_archive(schema, times)
+        for key, actual in (("first_time", str(times[0])), ("last_time", str(times[-1]))):
+            if training.get(key) != actual:
+                raise ValueError("Evaluation archive time range differs from the training archive")
+        if training.get("archive_state_count", len(states)) != len(states):
+            raise ValueError("Evaluation archive state count differs from training")
+        for left, right in (("train", "validation"), ("validation", "test")):
+            a, b = split.get(left, []), split.get(right, [])
+            if not a or not b or max(a) + horizon > min(b):
+                raise ValueError("Checkpoint split has overlapping future targets; retrain with horizon-aware purging")
     lead_months = int(training.get("lead_months", 1))
     scale = forecaster.state_scale.detach().cpu().numpy()
     mean = forecaster.state_mean.detach().cpu().numpy()
@@ -62,16 +74,21 @@ def evaluate_flow_checkpoint(
     case_rows: list[dict[str, Any]] = []
     for case_number, start in enumerate(test_indices):
         target_index = start + history_months + lead_months - 1
-        if target_index >= len(states):
+        target_end = target_index + horizon
+        if start < 0 or target_end > len(states):
             raise ValueError(f"Test window {start} is outside the evaluation archive")
         samples = forecaster.forecast(
-            states[start : start + history_months],
-            months=1,
+            forecaster.select_history(states[start : start + history_months]),
+            months=horizon,
             ensemble_size=ensemble_size,
             integration_steps=integration_steps,
             seed=seed + case_number * ensemble_size,
-        )[:, 0, :]
-        target = states[target_index]
+        )
+        if forecaster.is_dynamics:
+            target = states[target_index:target_end]
+        else:
+            samples = samples[:, 0, :]
+            target = states[target_index]
         ensemble_mean = samples.mean(axis=0)
         normalized_samples = (samples - mean[None, :]) / scale[None, :]
         normalized_target = (target - mean) / scale
@@ -81,6 +98,7 @@ def evaluate_flow_checkpoint(
             {
                 "window_index": start,
                 "target_time": str(times[target_index]),
+                "last_target_time": str(times[target_end - 1]),
                 "crps": _ensemble_crps(normalized_samples, normalized_target),
                 "ensemble_spread": float(normalized_samples.std(axis=0).mean()),
             }
@@ -101,6 +119,8 @@ def evaluate_flow_checkpoint(
     persistence = np.stack(
         [states[index + history_months - 1] for index in test_indices]
     )
+    if forecaster.is_dynamics:
+        persistence = np.broadcast_to(persistence[:, None, :], target_array.shape)
     normalized_persistence = (persistence - mean[None, :]) / scale[None, :]
     overall["persistence_rmse"] = _error_metrics(
         normalized_persistence,
@@ -115,7 +135,7 @@ def evaluate_flow_checkpoint(
     for variable in schema["variables"]:
         start, end = variable["slice"]
         by_variable[variable["name"]] = _error_metrics(
-            prediction_array[:, start:end], target_array[:, start:end]
+            prediction_array[..., start:end], target_array[..., start:end]
         )
 
     result = {
@@ -130,6 +150,16 @@ def evaluate_flow_checkpoint(
         "by_variable_raw_units": by_variable,
         "by_case_normalized": case_rows,
     }
+    if forecaster.is_dynamics:
+        result["format"] = "climate_diffusion.dynamics_evaluation.v1"
+        result["sampling_contract"] = "per_lead_conditional_marginals"
+        result["by_lead_normalized"] = [
+            {"lead_hours": (lead + 1) * forecaster.forecast_step_hours,
+             **_error_metrics(normalized_prediction[:, lead], normalized_target[:, lead]),
+             "persistence_rmse": _error_metrics(
+                 normalized_persistence[:, lead], normalized_target[:, lead])["rmse"]}
+            for lead in range(horizon)
+        ]
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(

@@ -40,7 +40,7 @@ def _epoch(
     training = optimizer is not None
     model.train(training)
     totals: dict[str, float] = {}
-    batches = 0
+    examples = 0
     context = torch.enable_grad() if training else torch.no_grad()
     with context:
         for batch in loader:
@@ -50,15 +50,17 @@ def _epoch(
             losses = model.loss(history, origin, targets, loss_config)
             if training:
                 optimizer.zero_grad(set_to_none=True)
+                if not torch.isfinite(losses["loss"]):
+                    raise FloatingPointError("Non-finite training loss")
                 losses["loss"].backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=True)
                 optimizer.step()
             for name, value in losses.items():
-                totals[name] = totals.get(name, 0.0) + float(value.detach().cpu())
-            batches += 1
-    if batches == 0:
+                totals[name] = totals.get(name, 0.0) + float(value.detach().cpu()) * history.shape[0]
+            examples += history.shape[0]
+    if examples == 0:
         raise ValueError("Split produced no batches")
-    return {name: value / batches for name, value in totals.items()}
+    return {name: value / examples for name, value in totals.items()}
 
 
 @torch.no_grad()
@@ -127,9 +129,13 @@ def train_dynamics_model(
             "Dynamics training needs a fixed-step archive; build one with "
             "prepare-climate-fixed-step-data"
         )
-    actual = np.diff(times).astype("timedelta64[h]").astype(np.int64)
-    if not np.all(actual == step_hours):
+    actual = np.diff(times)
+    if not np.all(actual == np.timedelta64(step_hours, "h")):
         raise ValueError(f"Archive timestamps violate the {step_hours}h step contract")
+    if min(epochs, batch_size) < 1 or learning_rate <= 0:
+        raise ValueError("epochs, batch_size and learning_rate must be positive")
+    if purge_windows < 0:
+        raise ValueError("purge_windows cannot be negative")
     if window_stride < 1:
         raise ValueError("window_stride must be positive")
 
@@ -155,11 +161,14 @@ def train_dynamics_model(
     sample_count = len(states) - span - horizon_steps + 1
     if sample_count < 3:
         raise ValueError("Archive is too short for this history/horizon window")
+    # Windows start one archive step apart before subsampling. Prevent future
+    # target intervals from overlapping across splits; past context may recur.
+    effective_purge = max(purge_windows, horizon_steps - 1)
     split = build_purged_temporal_split(
         sample_count,
         validation_fraction=validation_fraction,
         test_fraction=test_fraction,
-        purge_windows=purge_windows,
+        purge_windows=effective_purge,
     )
 
     # Normalization statistics stay inside train, and only ever move their start
@@ -256,6 +265,10 @@ def train_dynamics_model(
                     "schema": schema,
                     "training": {
                         "step_hours": step_hours,
+                        "forecast_step_hours": step_hours,
+                        "requested_purge_windows": purge_windows,
+                        "split_contract": "disjoint_future_targets.v1",
+                        "archive_state_count": len(states),
                         "horizon_hours": model_config.horizon_hours,
                         "history_span_steps": span,
                         "window_stride": window_stride,

@@ -1,8 +1,8 @@
-# Climate Diffusion: Monthly Latent Flow Matching
+# Climate Diffusion: Latent Dynamics + Flow Matching
 
-이 저장소는 기존 `typnonn_preesure_data_loader`가 만든 전 지구 기상장과 통합
-태풍·고기압 표를 월별 state로 결합하고, 다음 1개월 state를 생성하는
-conditional flow matching 모델을 제공합니다. Google WeatherNext2 원본 runner는
+이 저장소는 기상장 state를 생성하는 conditional flow matching 모델을 제공합니다.
+현재 branch에는 고정 간격 기상장의 물리 시간 latent dynamics trainer와 기존 월별 trainer가
+함께 있습니다. 월별 경로는 `typnonn_preesure_data_loader`의 기상장·통합 태풍 표를 사용합니다. Google WeatherNext2 원본 runner는
 변경하지 않으며, 동일한 `rollout(initial_state, horizon_hours)` 경계에서
 `weathernext`와 `flow_matching`을 선택할 수 있습니다.
 
@@ -11,7 +11,22 @@ conditional flow matching 모델을 제공합니다. Google WeatherNext2 원본 
 다음 달 state 사이의 확률 흐름 ODE를 학습한다는 점에서 latent generative forecast
 역할을 수행합니다.
 
-## 전체 구조
+## 현재 dynamics branch 구조
+
+`train-climate-dynamics`는 고정 6시간 archive에서 **AE + GRU + 물리 시간 latent ODE +
+시각별 Flow Matching head를 joint training**합니다. 학습된 하나의 checkpoint로
+기상장 ensemble을 생성합니다. [전체 구조와 loss 그림](struct-picture/README.md),
+[저장 모델과 출력](struct-picture/02-checkpoint-inference.md),
+[수정 사항 및 RunPod 실행 명령](struct-picture/03-review-and-run.md)을 참고하세요.
+
+이번 검토에서 adjoint의 GRU gradient, forward 내 latent scale 일관성, horizon을 고려한
+split purge, dynamics checkpoint의 예측·평가 연결을 수정했습니다. 기존 실험 결과는
+수정 전 결과이며 재학습·재평가가 필요합니다. Ensemble은 lead별 조건부 샘플이고,
+시간 상관을 학습한 joint stochastic trajectory를 보장하지 않습니다.
+
+아래 월별 모델과 실험 기록도 유지합니다.
+
+## 기존 월별 모델 구조
 
 ```mermaid
 flowchart TB
@@ -330,17 +345,23 @@ python scripts/baseline_skill.py --ensemble-size 32
 월별 모델은 한 archive 간격을 한 번에 건너뛰므로 ODE가 flow time tau in [0,1] 하나뿐입니다.
 `dynamics.py`는 예보가 실제로 가진 두 번째 축을 추가합니다.
 
-```text
-history(6개월) --GRU--> c
-x(t0) --encode--> z(0)
-        |  dz/ds = g(z, s, c)      odeint(rk4, adjoint), 물리 시간
-        v
-z(6h) -> z(12h) -> ... -> z(720h)         120 steps
-        |
-        +-- 각 s_k에서 v_theta(w, tau, [c, z_k, s_k]) --> ensemble
+```mermaid
+flowchart TB
+    HIST["과거 6개 기상장"] --> ENC["공유 AE encoder"]
+    ENC --> GRU["GRU condition c"]
+    ENC --> INIT["현재 latent z0"]
+    GRU --> ODE["물리 시간 ODE: s 0 → 1"]
+    INIT --> ODE
+    ODE --> Z["6h ... 720h latent"]
+    Z --> DET["Decoder → 결정론적 예측"]
+    Z --> FLOW["각 lead의 flow ODE: τ 0 → 1"]
+    GRU --> FLOW
+    NOISE["독립 Gaussian noise"] --> FLOW
+    FLOW --> OUT["Decoder → 기상장 ensemble"]
 ```
 
-결정론적 ODE가 궤적을 나르고, flow matching이 그 주변의 확률적 퍼짐을 담당합니다.
+결정론적 ODE가 latent 궤적을 만들고, flow matching은 그 latent를 조건으로 각 lead의 분포를 학습합니다.
+두 출력의 평균이 일치하도록 강제하지는 않습니다.
 `TrajectoryFlowField`는 lead time으로도 조건화되어 head 하나가 모든 lead를 담당합니다.
 
 ```bash
@@ -355,8 +376,9 @@ train-climate-dynamics \
   --dynamics-solver rk4 --epochs 150
 ```
 
-`--history-stride`가 긴 문맥을 촘촘한 archive에 얹습니다: 6 steps x stride 120 x 6h =
-4,320h = 6개월이라, 720개 스냅샷을 encoder에 넣지 않고도 6개월 문맥이 됩니다.
+`--history-stride`는 history 샘플 간격입니다. 6개 시점 사이 간격은 5개이므로
+`(6 - 1) × 120 × 6h = 3,600h = 150일`의 문맥입니다. 연속 archive 601개 중
+`t0-150d, -120d, -90d, -60d, -30d, t0`의 6개를 encoder에 넣습니다.
 
 ### 첫 실험 결과: autoencoder가 병목
 
@@ -367,18 +389,19 @@ train-climate-dynamics \
 | `dyn-h120-ens` | 720h | 128 | 0.870 | 0.491 | 0.871 |
 | `fix-h24-l512` | 144h | 512 | 0.836 | **0.004** | 0.849 |
 
-**ODE는 잘 학습됩니다** — latent 512에서 궤적 MSE 0.004는 latent 분산의 99.6%를 설명한다는
-뜻입니다. 문제는 state RMSE가 recon RMSE와 거의 같다는 것입니다. 즉 궤적 오차 전부가
-autoencoder 재구성 오차이고, dynamics는 관여할 여지조차 없습니다.
+Latent 512에서 궤적 MSE는 0.004이지만 target 분산과 latent collapse를 함께 확인해야
+예측력을 판단할 수 있습니다. State RMSE와 reconstruction RMSE가 비슷하다는 관찰은
+AE 병목을 시사하지만 오차 전부의 원인을 분리해 증명하지는 않습니다.
 
-선형 PCA 하한과 비교하면 격차가 분명합니다 (6h 스냅샷, 정규화 단위):
+선형 PCA 기준과 비교하면 격차가 분명합니다 (6h 스냅샷, 정규화 단위):
 
-| latent | PCA 하한 | 신경망 AE |
+| latent | PCA 기준 | 신경망 AE |
 |---|---|---|
 | 128 | 0.401 | 0.862 |
 | 512 | 0.166 | 0.836 |
 
-**신경망 AE가 선형 PCA보다 5배 나쁩니다.** 용량 문제가 아니라 구조적 결함입니다.
+**해당 latent 512 실험에서 AE 재구성 RMSE가 PCA 기준보다 약 5배 큽니다.**
+PCA는 선형 재구성 비교 기준이며 비선형 AE에 대한 이론적 하한은 아닙니다.
 진단해 보면 두 가지가 겹칩니다.
 
 1. `fix-h24-l512`의 `latent_scale`이 `LATENT_SCALE_FLOOR`(1e-3)에 닿았습니다. raw latent
@@ -393,7 +416,7 @@ autoencoder 재구성 오차이고, dynamics는 관여할 여지조차 없습니
 
 1. AE 파라미터를 weight decay에서 제외하거나, EMA scale buffer 대신 차원별 단위분산 제약을
    직접 걸어 floor 문제를 없앨 것
-2. AE만 단독 학습시켜 PCA 하한에 도달하는지 먼저 확인할 것. 도달하지 못하면 다중 과제
+2. AE만 단독 학습시켜 PCA 기준에 도달하는지 먼저 확인할 것. 도달하지 못하면 다중 과제
    충돌이 아니라 AE 자체 문제입니다
 3. 격자 구조를 쓰는 encoder(순환 경계 `nn.Conv2d`)로 교체할 것. 현재는 4변수 x 16위도 x
    32경도를 평평한 2048 벡터로 다룹니다
@@ -403,7 +426,7 @@ python scripts/visualize_dynamics.py --cases 64 --ensemble-size 16
 ```
 
 `outputs/`에 `dynamics_skill.png`(리드 시간별 RMSE 대 persistence/climatology),
-`dynamics_training.png`(loss 항별 곡선), `dynamics_autoencoder.png`(AE 대 PCA 하한),
+`dynamics_training.png`(loss 항별 곡선), `dynamics_autoencoder.png`(AE 대 PCA 기준),
 `dynamics-summary.json`이 생성됩니다.
 
 ### 검증: 리드 시간별 skill 곡선
@@ -420,15 +443,15 @@ python scripts/visualize_dynamics.py --cases 48 --ensemble-size 8
 - persistence는 6h에서 0.44, 720h에서 1.22입니다. 무조건부 기후값은 1.02로 평평합니다.
 - 모델은 약 30h 이후부터 persistence를 이기고 기후값보다 항상 15% 낫습니다.
 
-**평평한 곡선은 예보를 하고 있지 않다는 뜻입니다.** 리드 시간과 무관하게 같은 품질을
+**평평한 곡선은 lead 변화에 대한 예측 민감도를 추가로 점검할 신호입니다.** 리드 시간과 무관하게 같은 품질을
 낸다는 것은 출력이 대략 "기후값보다 조금 나은 지도"에 고정돼 있다는 의미이고, 30h 이후
 persistence를 이기는 것은 그 자체로는 성과가 아닙니다. 30h 이전에는 persistence보다 크게
-나쁩니다. 성능 상한은 전부 autoencoder 재구성 오차(0.84~0.87)가 결정합니다.
+나쁩니다. Autoencoder 재구성 오차(0.84~0.87)가 중요한 병목으로 보이지만 ODE 오차와의 원인 분리는 추가 검증이 필요합니다.
 
 ### AE 단독 probe: 병목의 진짜 원인
 
 결합 목적함수 안에서 재구성이 나쁜 데는 두 가지 가능성이 있습니다. AE가 그 일을 못 하거나,
-다른 항에 밀리거나. AE만 따로 학습시켜 선형 PCA 하한과 대면 분리됩니다.
+다른 항에 밀리거나. AE만 따로 학습시켜 선형 PCA 기준과 대면 분리됩니다.
 
 ```bash
 python scripts/autoencoder_probe.py --latents 128 512 --kinds mlp conv --epochs 30
@@ -436,7 +459,7 @@ python scripts/autoencoder_probe.py --latents 128 512 --kinds mlp conv --epochs 
 
 6h 스냅샷, holdout 재구성 RMSE (정규화 단위):
 
-| kind | latent | params | 단독 학습 | PCA 하한 | 배수 | 유효 차원 |
+| kind | latent | params | 단독 학습 | PCA 기준 | 배수 | 유효 차원 |
 |---|---|---|---|---|---|---|
 | mlp | 128 | 2.70M | 0.436 | 0.401 | 1.09x | 118/128 |
 | mlp | 512 | 2.90M | 0.392 | 0.166 | 2.36x | 488/512 |
@@ -446,16 +469,15 @@ python scripts/autoencoder_probe.py --latents 128 512 --kinds mlp conv --epochs 
 같은 AE가 전체 dynamics 모델 안에서는 **0.836**이었습니다. 단독으로는 0.30~0.44입니다.
 유효 차원도 단독일 때 445/512로 건강한데 결합 시 128/512로 붕괴합니다.
 
-![AE 단독 probe 대 PCA 하한](docs/figures/autoencoder-probe.png)
+![AE 단독 probe 대 PCA 기준](docs/figures/autoencoder-probe.png)
 
 ![결합 모델 안의 AE 위치](docs/figures/dynamics_autoencoder.png)
 
 두 번째 그림의 마름모가 모두 PCA 곡선 위에 한참 떨어져 있는 것이 결합 학습에서의 붕괴입니다.
 
-**따라서 근본 원인은 AE 용량도, weight decay도, encoder 구조도 아니라 다중 과제 충돌입니다.**
+**이 결과는 다중 과제 충돌 가설을 지지하지만 원인을 하나로 확정하지는 않습니다.**
 trajectory loss와 flow matching loss가 "예측하기 쉬운" 저정보 latent를 선호하고, 재구성 항이
-거기에 밀립니다. latent 궤적 MSE가 0.004까지 떨어진 것이 그 증거입니다 — ODE가 잘 맞춘 게
-아니라 맞추기 쉬운 latent가 된 것입니다.
+거기에 밀립니다. 작은 latent 궤적 MSE는 latent 축소로도 얻을 수 있으므로 raw-state 예측과 함께 검증해야 합니다.
 
 Conv encoder(3번)는 latent 512에서 MLP보다 확실히 낫고(0.301 대 0.392) 30 epoch에서도 아직
 개선 중이었으므로, 다중 과제 충돌을 해결한 뒤에 다시 볼 가치가 있습니다.
@@ -613,8 +635,8 @@ objective`의 결합과 세 실험군의 정량 비교에서 형성됩니다.
 | `latent_fix_*.png` | latent 정규화 / 선택 기준 / 앙상블 CRPS ablation 5종 |
 | `dynamics_skill.png` | 리드 시간별 RMSE 곡선 (6h~720h) |
 | `dynamics_training.png` | dynamics loss 항별 곡선 |
-| `dynamics_autoencoder.png` | 결합 학습 AE 대 선형 PCA 하한 |
-| `autoencoder-probe.png` | AE 단독 학습 대 PCA 하한 (mlp / conv) |
+| `dynamics_autoencoder.png` | 결합 학습 AE 대 선형 PCA 기준 |
+| `autoencoder-probe.png` | AE 단독 학습 대 PCA 기준 (mlp / conv) |
 
 ## 현재 범위와 주의점
 

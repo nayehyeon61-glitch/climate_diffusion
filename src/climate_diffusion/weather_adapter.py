@@ -79,14 +79,8 @@ class FlowMatchingWeatherRunner:
                 self.forecaster.state_mean.detach().cpu(), dtype=np.float32
             ),
         )
-        required = self.forecaster.config.history_months
-        if vectors.shape[0] < required:
-            raise ValueError(
-                f"Flow checkpoint requires {required} history states; "
-                f"received {vectors.shape[0]}"
-            )
         prediction = self.forecaster.forecast(
-            vectors[-required:],
+            self.forecaster.select_history(vectors),
             months=steps,
             ensemble_size=1,
             integration_steps=self.integration_steps,

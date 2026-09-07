@@ -125,7 +125,7 @@ class DynamicsLossConfig:
             self.ensemble_weight,
         ) < 0:
             raise ValueError("Loss weights must be non-negative")
-        if self.ensemble_size == 1:
+        if self.ensemble_size < 0 or self.ensemble_size == 1:
             raise ValueError("ensemble_size must be 0 (off) or at least 2")
         if min(self.ensemble_steps, self.flow_steps_per_batch) < 1:
             raise ValueError("ensemble_steps and flow_steps_per_batch must be positive")
@@ -139,8 +139,8 @@ class TrajectoryWindowDataset(Dataset):
     """History windows with the full future trajectory as the target.
 
     ``history_stride`` lets a long context sit on a fine archive: six states at
-    a 120-step stride cover six months of a 6-hourly record without feeding 720
-    snapshots through the encoder.
+    a 120-step stride span 150 days of a 6-hourly record, including the
+    origin, without feeding all 601 snapshots through the encoder.
     """
 
     def __init__(
@@ -317,7 +317,7 @@ class LatentDynamicsFlow(nn.Module):
         if not self.config.latent_normalization:
             return latent
         if update_scale and self.training:
-            observed = latent.detach().std().clamp_min(LATENT_SCALE_FLOOR)
+            observed = latent.detach().std(unbiased=False).clamp_min(LATENT_SCALE_FLOOR)
             if self.latent_scale_count == 0:
                 self.latent_scale.fill_(float(observed))
             else:
@@ -350,11 +350,19 @@ class LatentDynamicsFlow(nn.Module):
         from torchdiffeq import odeint, odeint_adjoint
 
         config = self.config
+        # Update once before any encoding so history, origin and targets share
+        # the same latent coordinates throughout this forward pass.
+        initial = self.encode_latent(origin, update_scale=True)
         history_latents = self.encode_latent(history)
         condition = self.history_encoder(history_latents)
-        initial = self.encode_latent(origin, update_scale=True)
         times = self.lead_times(initial.device, initial.dtype)
         solver = odeint_adjoint if config.dynamics_adjoint else odeint
+        # The condition is a computed tensor, not a registered Parameter.
+        # Explicitly include it so adjoint gradients reach the history GRU.
+        adjoint_kwargs = (
+            {"adjoint_params": (*self.dynamics.parameters(), condition)}
+            if config.dynamics_adjoint else {}
+        )
         trajectory = solver(
             _DynamicsField(self.dynamics, condition),
             initial,
@@ -362,6 +370,7 @@ class LatentDynamicsFlow(nn.Module):
             method=config.dynamics_solver,
             rtol=config.dynamics_rtol,
             atol=config.dynamics_atol,
+            **adjoint_kwargs,
         )
         return trajectory.transpose(0, 1), condition
 
@@ -375,6 +384,8 @@ class LatentDynamicsFlow(nn.Module):
         integration_steps: int,
         generator: torch.Generator | None = None,
     ) -> torch.Tensor:
+        if integration_steps < 1:
+            raise ValueError("integration_steps must be positive")
         latent = torch.randn(
             condition.shape[0],
             self.config.latent_dim,
@@ -489,12 +500,16 @@ class LatentDynamicsFlow(nn.Module):
         generator: torch.Generator | None = None,
     ) -> torch.Tensor:
         """Return ``[batch, member, lead, state]`` samples on the physical grid."""
-        trajectory, condition = self.rollout(history, origin)
+        if min(ensemble_size, integration_steps) < 1:
+            raise ValueError("ensemble_size and integration_steps must be positive")
         leads = (
             list(range(self.config.horizon_steps))
             if lead_indices is None
             else list(lead_indices)
         )
+        if not leads or any(lead < 0 or lead >= self.config.horizon_steps for lead in leads):
+            raise ValueError("lead_indices must be nonempty and inside the trained horizon")
+        trajectory, condition = self.rollout(history, origin)
         lead_grid = self.lead_times(origin.device, origin.dtype)[1:]
         members = []
         for _ in range(ensemble_size):
