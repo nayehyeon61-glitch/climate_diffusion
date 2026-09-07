@@ -11,7 +11,20 @@
 다음 달 state 사이의 확률 흐름 ODE를 학습한다는 점에서 latent generative forecast
 역할을 수행합니다.
 
-## 현재 dynamics branch 구조
+## 추가: Full-state Flow Matching MoE
+
+`train-climate-moe`는 전체 기상 state의 regime/mode expert들과 meta learner를
+**두 단계로 학습**합니다. Expert AE64 → velocity IDCT → Meta AE160 → member별
+vector-field fusion → 하나의 최종 생성 ODE 구조입니다. 변수별 expert 또는 생성 endpoint
+평균 시스템이 아닙니다. [실행·loss·메모리 README](flow-matching_moe/README.md),
+[상세 Mermaid](struct-picture/04-moe-training.md),
+[실제 CPU smoke 결과와 제한](docs/results/moe-smoke/README.md)을 참고하세요.
+
+이 경로의 ODE는 physical lead에 조건화된 **생성 flow time**을 적분합니다. 아래 기존
+물리 시간 latent dynamics 모델과는 별도 모델이며, 기존 checkpoint를 MoE로 자동 변환하지
+않습니다. 모든 모듈의 checkpoint·추론·weather adapter·평가 연결을 지원합니다.
+
+## 기존 dynamics branch 구조
 
 `train-climate-dynamics`는 고정 6시간 archive에서 **AE + GRU + 물리 시간 latent ODE +
 시각별 Flow Matching head를 joint training**합니다. 학습된 하나의 checkpoint로

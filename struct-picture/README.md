@@ -1,4 +1,38 @@
-# Latent dynamics + Flow Matching 구조
+# Climate Flow: Dynamics 및 Full-state MoE 구조
+
+## 최신 추가 경로: Full-state Flow Matching MoE
+
+- [04-moe-training.md](04-moe-training.md): DCT/IDCT 좌표, AE64/160, 두 단계 loss·freeze·split
+- [05-moe-inference.md](05-moe-inference.md): 저장 모델과 member별 **fusion 후 적분**
+- [실행 README](../flow-matching_moe/README.md): 설치/RunPod/평가/메모리 및 수정 위치
+- [실제 학습 결과](../docs/results/moe-smoke/README.md): CPU synthetic 40+25 epoch, 실제 그래프와 제한
+
+```mermaid
+flowchart TB
+    A["Causal full-field history"] --> D["History-time DCT → context h"]
+    Z["Independent noise per member"] --> X["Shared current full state X_tau<br/>physical lead is fixed condition"]
+    X --> E["Spatial DCT → K regime/mode experts<br/>AE64 + separate velocity heads"]
+    D --> E
+    E --> I["Velocity IDCT BEFORE meta<br/>common standardized field coordinates"]
+    I --> M["Meta learner AE160<br/>simplex alpha + bounded residual"]
+    D --> M
+    X --> M
+    M --> V["Fuse candidate vector fields"]
+    I --> V
+    V --> O["One final ODE per member<br/>reevaluate all experts/meta each midpoint step"]
+    O --> X
+    O --> OUT["At tau=1: denormalize<br/>M × H × full-state forecast"]
+    E --> L1["Stage 1: weighted FM + AE + balance/diversity"]
+    V --> L2["Stage 2: FM + Energy/CRPS + guards<br/>experts/history/router frozen"]
+    O --> L2
+```
+
+`train-climate-moe`와 아래 `train-climate-dynamics`는 별도 학습 진입점입니다. MoE v1은
+생성 flow-time ODE이고 아래 모델은 물리 시간 latent dynamics를 포함합니다. Expert의
+full state는 archive에 선택된 모든 field를 뜻합니다. Regime별 의미는 loss만으로 보장되지
+않으며 [실측 routing 진단](../docs/results/moe-smoke/summary.json)과 held-out skill로 평가합니다.
+
+## 보존된 기존 경로: Latent dynamics + Flow Matching
 
 대상: `feature/latent-dynamics-flow`. 실제 코드 `dynamics.py`, `train_dynamics.py`,
 `inference.py`, `evaluation.py`를 기준으로 작성했습니다. 과거 GPT Router + 태풍 dual-loss

@@ -14,6 +14,8 @@ from .config import FlowModelConfig
 from .data import load_monthly_archive
 from .model import MonthlyLatentFlow
 from .dynamics import DynamicsModelConfig, LatentDynamicsFlow
+from .moe import MOE_FORMAT, FlowMatchingMoE, MoEConfig
+from .moe_data import load_moe_archive
 
 
 class LatentFlowForecaster:
@@ -34,17 +36,22 @@ class LatentFlowForecaster:
             "climate_diffusion.monthly_latent_flow.v2",
             "climate_diffusion.latent_flow.v3",
             "climate_diffusion.latent_dynamics_flow.v1",
+            MOE_FORMAT,
         }:
             raise ValueError("Unsupported climate flow checkpoint format")
-        self.is_dynamics = payload["format"] == "climate_diffusion.latent_dynamics_flow.v1"
-        config_class = DynamicsModelConfig if self.is_dynamics else FlowModelConfig
-        model_class = LatentDynamicsFlow if self.is_dynamics else MonthlyLatentFlow
+        self.is_moe = payload["format"] == MOE_FORMAT
+        # is_dynamics denotes the bounded, strided, multi-lead temporal contract.
+        self.is_dynamics = self.is_moe or payload["format"] == "climate_diffusion.latent_dynamics_flow.v1"
+        config_class = MoEConfig if self.is_moe else DynamicsModelConfig if self.is_dynamics else FlowModelConfig
+        model_class = FlowMatchingMoE if self.is_moe else LatentDynamicsFlow if self.is_dynamics else MonthlyLatentFlow
         self.config = config_class(**payload["model_config"])
         self.model = model_class(self.config).to(self.device)
         self.history_steps = self.config.history_steps if self.is_dynamics else self.config.history_months
         self.history_stride = self.config.history_stride if self.is_dynamics else 1
         self.history_span_steps = (self.history_steps - 1) * self.history_stride + 1
         self.model.load_state_dict(payload["model"])
+        if self.is_moe:
+            self.model.set_stage(payload["training"]["stage"])
         self.model.eval().requires_grad_(False)
         if any(parameter.requires_grad for parameter in self.model.parameters()):
             raise RuntimeError("Flow checkpoint could not be frozen")
@@ -122,6 +129,7 @@ class LatentFlowForecaster:
         ensemble_size: int = 1,
         integration_steps: int = 32,
         seed: int = 0,
+        moe_mode: str | None = None,
     ) -> np.ndarray:
         """Return [ensemble, forecast_step, state]; dynamics uses per-lead marginals."""
         history = np.asarray(history_states, dtype=np.float32)
@@ -133,6 +141,10 @@ class LatentFlowForecaster:
 
         if not np.isfinite(history).all():
             raise ValueError("History states must be finite")
+        if moe_mode is not None and not self.is_moe:
+            raise ValueError("moe_mode is only supported by MoE checkpoints")
+        if self.is_moe and moe_mode == "meta" and self.model.stage != "meta":
+            raise ValueError("Meta inference requires a completed meta-stage checkpoint")
         normalized = self._normalise(history)
         if self.is_dynamics:
             if months > self.config.horizon_steps:
@@ -142,6 +154,7 @@ class LatentFlowForecaster:
                 normalized.unsqueeze(0), normalized[-1:].clone(),
                 ensemble_size=ensemble_size, integration_steps=integration_steps,
                 lead_indices=list(range(months)), generator=generator,
+                **({"mode": moe_mode} if self.is_moe else {}),
             )[0]
             return self._denormalise(samples)
         outputs = []
@@ -172,11 +185,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ensemble-size", type=int, default=1)
     parser.add_argument("--integration-steps", type=int, default=32)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--moe-mode", choices=("experts", "meta", "uniform"))
     parser.add_argument("--output", default="outputs/climate-flow-forecast.npz")
     args = parser.parse_args(argv)
 
-    states, times, schema = load_monthly_archive(args.archive)
     forecaster = LatentFlowForecaster(args.checkpoint)
+    loader = load_moe_archive if forecaster.is_moe else load_monthly_archive
+    states, times, schema = loader(args.archive)
     forecaster.validate_archive(schema, times)
     history = forecaster.select_history(states)
     predictions = forecaster.forecast(
@@ -186,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         ensemble_size=args.ensemble_size,
         integration_steps=args.integration_steps,
         seed=args.seed,
+        moe_mode=args.moe_mode,
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -196,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
         lead_hours=np.arange(1, predictions.shape[1] + 1) * forecaster.forecast_step_hours,
         checkpoint=str(forecaster.checkpoint_path),
         forecast_step_hours=np.asarray(forecaster.forecast_step_hours, dtype=np.int64),
+        moe_mode=str(args.moe_mode or (forecaster.model.stage if forecaster.is_moe else "")),
     )
     print(output)
     return 0

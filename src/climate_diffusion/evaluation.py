@@ -1,4 +1,4 @@
-"""Held-out monthly forecast evaluation for frozen flow checkpoints."""
+"""Held-out forecast evaluation for frozen monthly, dynamics and MoE checkpoints."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ import numpy as np
 
 from .data import load_monthly_archive
 from .inference import LatentFlowForecaster
+from .moe_data import load_moe_archive, validate_moe_split
+from .train import _sha256
 
 
 def _ensemble_crps(samples: np.ndarray, target: np.ndarray) -> float:
@@ -37,12 +39,15 @@ def evaluate_flow_checkpoint(
     integration_steps: int = 32,
     seed: int = 0,
     device: str | None = None,
+    max_cases: int | None = None,
+    moe_mode: str | None = None,
 ) -> Path:
-    """Evaluate only the test windows recorded in a checkpoint split manifest."""
+    """Evaluate only test windows recorded in a checkpoint split manifest."""
     if min(ensemble_size, integration_steps) < 1:
         raise ValueError("ensemble_size and integration_steps must be positive")
-    states, times, schema = load_monthly_archive(archive_path)
     forecaster = LatentFlowForecaster(checkpoint_path, device=device)
+    loader = load_moe_archive if forecaster.is_moe else load_monthly_archive
+    states, times, schema = loader(archive_path)
     if schema["state_dim"] != forecaster.config.state_dim:
         raise ValueError("Evaluation archive does not match checkpoint state dimension")
 
@@ -55,6 +60,15 @@ def evaluate_flow_checkpoint(
         )
     history_months = forecaster.history_span_steps
     horizon = forecaster.config.horizon_steps if forecaster.is_dynamics else 1
+    if forecaster.is_moe:
+        validate_moe_split(split, horizon, len(states) - history_months - horizon + 1)
+        if training["archive_sha256"] != _sha256(Path(archive_path)):
+            raise ValueError("MoE evaluation must use the identical training archive")
+    if max_cases is not None:
+        if max_cases < 1:
+            raise ValueError("max_cases must be positive")
+        positions = np.linspace(0, len(test_indices) - 1, min(max_cases, len(test_indices)), dtype=int)
+        test_indices = [test_indices[i] for i in positions]
     if forecaster.is_dynamics:
         forecaster.validate_archive(schema, times)
         for key, actual in (("first_time", str(times[0])), ("last_time", str(times[-1]))):
@@ -83,6 +97,7 @@ def evaluate_flow_checkpoint(
             ensemble_size=ensemble_size,
             integration_steps=integration_steps,
             seed=seed + case_number * ensemble_size,
+            moe_mode=moe_mode,
         )
         if forecaster.is_dynamics:
             target = states[target_index:target_end]
@@ -104,6 +119,11 @@ def evaluate_flow_checkpoint(
             }
         )
         case_rows.append(case_metrics)
+        if forecaster.is_moe:
+            # Multivariate field energy score at each lead, then average leads.
+            accuracy = np.linalg.norm(normalized_samples - normalized_target[None], axis=-1).mean()
+            pairwise = np.linalg.norm(normalized_samples[:, None] - normalized_samples[None, :], axis=-1).mean()
+            case_metrics["energy"] = float((accuracy - 0.5 * pairwise) / np.sqrt(states.shape[1]))
         predictions.append(ensemble_mean)
         targets.append(target)
 
@@ -146,6 +166,7 @@ def evaluate_flow_checkpoint(
         "test_windows": test_indices,
         "ensemble_size": ensemble_size,
         "integration_steps": integration_steps,
+        "max_cases": max_cases,
         "normalized_overall": overall,
         "by_variable_raw_units": by_variable,
         "by_case_normalized": case_rows,
@@ -160,6 +181,12 @@ def evaluate_flow_checkpoint(
                  normalized_persistence[:, lead], normalized_target[:, lead])["rmse"]}
             for lead in range(horizon)
         ]
+    if forecaster.is_moe:
+        result["format"] = "climate_diffusion.moe_evaluation.v1"
+        result["moe_mode"] = moe_mode or forecaster.model.stage
+        result["sampling_contract"] = training["sampling_contract"]
+        result["normalized_overall"]["energy"] = float(np.mean([row["energy"] for row in case_rows]))
+        result["probabilistic_score_estimator"] = "empirical (diagonal pairs included), not training fair estimator"
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
@@ -169,13 +196,15 @@ def evaluate_flow_checkpoint(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Evaluate a frozen monthly flow model")
+    parser = argparse.ArgumentParser(description="Evaluate a frozen climate flow model")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--archive", required=True)
     parser.add_argument("--ensemble-size", type=int, default=8)
     parser.add_argument("--integration-steps", type=int, default=32)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device")
+    parser.add_argument("--max-cases", type=int)
+    parser.add_argument("--moe-mode", choices=("experts", "meta", "uniform"))
     parser.add_argument("--output", default="outputs/monthly-flow-evaluation.json")
     args = parser.parse_args(argv)
     path = evaluate_flow_checkpoint(
@@ -186,6 +215,8 @@ def main(argv: list[str] | None = None) -> int:
         integration_steps=args.integration_steps,
         seed=args.seed,
         device=args.device,
+        max_cases=args.max_cases,
+        moe_mode=args.moe_mode,
     )
     print(path)
     return 0

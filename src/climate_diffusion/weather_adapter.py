@@ -11,6 +11,7 @@ import xarray as xr
 from .data import aggregate_monthly_fields, reconstruct_dataset, vectorize_dataset
 from .fixed_step_data import sample_fixed_step_history
 from .inference import LatentFlowForecaster
+from .moe_data import align_moe_grid
 
 LEGACY_MONTHLY_STEP_HOURS = 30 * 24
 
@@ -60,6 +61,8 @@ class FlowMatchingWeatherRunner:
             history = sample_fixed_step_history(initial_state, self.forecast_step_hours)
         else:
             history, _ = aggregate_monthly_fields(initial_state, complete_only=True)
+        if self.forecaster.is_moe:
+            history = align_moe_grid(history, self.forecaster.schema)
         return history
 
     def rollout(self, initial_state: xr.Dataset, horizon_hours: int) -> xr.Dataset:
@@ -78,6 +81,7 @@ class FlowMatchingWeatherRunner:
             integrated_defaults=np.asarray(
                 self.forecaster.state_mean.detach().cpu(), dtype=np.float32
             ),
+            require_observed=self.forecaster.is_moe,
         )
         prediction = self.forecaster.forecast(
             self.forecaster.select_history(vectors),

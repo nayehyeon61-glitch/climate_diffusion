@@ -18,12 +18,14 @@ dependencies = [
 [project.optional-dependencies]
 io = ["dask[array]>=2023.1", "netCDF4>=1.6", "pyarrow>=12", "zarr>=2.16"]
 test = ["pytest>=7", "scipy>=1.10"]
+plots = ["matplotlib>=3.7"]
 
 [project.scripts]
 prepare-climate-monthly-data = "climate_diffusion.data:main"
 prepare-climate-fixed-step-data = "climate_diffusion.fixed_step_data:main"
 train-climate-flow = "climate_diffusion.train:main"
 train-climate-dynamics = "climate_diffusion.train_dynamics:main"
+train-climate-moe = "climate_diffusion.train_moe:main"
 forecast-climate-flow = "climate_diffusion.inference:main"
 evaluate-climate-flow = "climate_diffusion.evaluation:main"
 
