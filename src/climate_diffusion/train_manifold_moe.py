@@ -40,13 +40,22 @@ def _save(path, model, schema, mean, scale, training, rows):
 def _pairs(model, batch, generator, lead_count):
     targets = batch["targets"]
     count = min(lead_count, targets.shape[1])
-    picks = torch.randint(targets.shape[1], (len(targets), count), device=targets.device, generator=generator)
+    horizon = targets.shape[1]
+    if count == 1:
+        picks = torch.randint(horizon, (len(targets), 1), device=targets.device, generator=generator)
+    else:
+        starts = torch.randint(horizon - count + 1, (len(targets), 1),
+                               device=targets.device, generator=generator)
+        picks = starts + torch.arange(count, device=targets.device)[None]
     rows = torch.arange(len(targets), device=targets.device)[:, None]
     target = targets[rows, picks].reshape(-1, targets.shape[-1])
     context = model.encode_history(batch["history"])[:, None].expand(-1, count, -1).reshape(len(target), -1)
     # Do not let the encoder shrink/move FM targets to make transport loss easy.
     code = model.encode(target).detach()
-    source = torch.randn(code.shape, device=code.device, dtype=code.dtype, generator=generator)
+    # Reuse the same intrinsic source across adjacent leads, consistent with
+    # member coupling at inference. This is conditioning repair, not joint-law training.
+    source = torch.randn((len(targets), 1, code.shape[-1]), device=code.device,
+                         dtype=code.dtype, generator=generator).expand(-1, count, -1).reshape_as(code)
     tau = torch.rand(len(code), device=code.device, dtype=code.dtype, generator=generator)
     lead = (picks.flatten().to(code) + 1) / targets.shape[1]
     q = (1 - tau[:, None]) * source + tau[:, None] * code
@@ -200,6 +209,9 @@ def train_manifold_moe(archive_path, output_path, *, stage="all", init_checkpoin
             "normalization_span": [0, end], "manifold_fit_span": [0, end],
             "missing_value_policy": "fully_observed_or_fail",
             "sampling_contract": "intrinsic_ODE_shared_member_noise_across_leads_not_joint_trajectory_training",
+            "training_lead_sampling": "adjacent_leads_with_shared_source_noise.v1",
+            "lead_condition_contract": "s=(lead_index+1)/horizon_steps; physical_hours=s*horizon_hours",
+            "target_time_semantics": "target[j]=origin+(j+1)*forecast_step_hours",
             "physics_contract": "surface_diagnostic_reconstruction_and_metric_not_primitive_PDE",
             "projection_contract": "decoder_Jacobian_damped_weighted_tangent_lift.v1",
             "seed": seed, "learning_rate": learning_rate, "joint_lr_factor": joint_lr_factor,

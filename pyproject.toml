@@ -29,6 +29,7 @@ train-climate-moe = "climate_diffusion.train_moe:main"
 train-climate-manifold-moe = "climate_diffusion.train_manifold_moe:main"
 forecast-climate-flow = "climate_diffusion.inference:main"
 evaluate-climate-flow = "climate_diffusion.evaluation:main"
+diagnose-climate-time = "climate_diffusion.time_alignment:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

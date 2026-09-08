@@ -22,12 +22,22 @@ def _pairs(model, batch, generator, lead_count):
     context = model.encode_history(history)
     batch_size, horizon, dimension = targets.shape
     count = min(lead_count, horizon)
-    picks = torch.randint(horizon, (batch_size, count), device=targets.device, generator=generator)
+    # Use adjacent physical leads when more than one lead is requested.  This
+    # exposes real temporal changes instead of a bag of unrelated marginals.
+    # One source is shared across those leads, matching forecast()'s common
+    # random-number coupling; it still does not claim a joint trajectory law.
+    if count == 1:
+        picks = torch.randint(horizon, (batch_size, 1), device=targets.device, generator=generator)
+    else:
+        starts = torch.randint(horizon - count + 1, (batch_size, 1),
+                               device=targets.device, generator=generator)
+        picks = starts + torch.arange(count, device=targets.device)[None]
     rows = torch.arange(batch_size, device=targets.device)[:, None]
     target = targets[rows, picks].reshape(-1, dimension)
     context = context[:, None].expand(-1, count, -1).reshape(len(target), -1)
     lead = (picks.flatten().to(target.dtype) + 1) / horizon
-    source = torch.randn(target.shape, device=target.device, dtype=target.dtype, generator=generator)
+    source = torch.randn((batch_size, 1, dimension), device=target.device,
+                         dtype=target.dtype, generator=generator).expand(-1, count, -1).reshape_as(target)
     tau = torch.rand(len(target), device=target.device, generator=generator)
     state = (1 - tau[:, None]) * source + tau[:, None] * target
     return state, target - source, tau, context, lead, target
@@ -178,6 +188,9 @@ def train_moe(archive_path, output_path, *, stage="all", init_checkpoint=None,
         "split_contract": "moe_five_way_disjoint_future_targets.v1",
         "missing_value_policy": "fully_observed_or_fail", "seed": seed,
         "sampling_contract": "shared_member_noise_across_leads_not_joint_trajectory_training",
+        "training_lead_sampling": "adjacent_leads_with_shared_source_noise.v1",
+        "lead_condition_contract": "s=(lead_index+1)/horizon_steps; physical_hours=s*horizon_hours",
+        "target_time_semantics": "target[j]=origin+(j+1)*forecast_step_hours",
         "batch_size": batch_size, "window_stride": window_stride, "learning_rate": learning_rate,
         "ensemble_size": ensemble_size, "integration_steps": integration_steps,
         "expert_leads": expert_leads, "meta_leads": meta_leads,

@@ -26,6 +26,46 @@
 기존 `smoke_moe.py`는 아래 이전 모델을 실행합니다. Manifold는 decoder의 학습된 상태 표현이며
 정확한 대기 PDE 해공간임을 보장하지 않습니다. 실제 ERA5 장기 학습은 아직 실행하지 않았습니다.
 
+## 예측–ERA5 시간 정합 및 변화율 진단
+
+`diagnose-climate-time`은 저장된 ensemble forecast와 fixed-step archive를
+`valid_time = origin_time + lead_hours`로 **정확히** 결합합니다. nearest-time이나
+상관 최대 lag로 정답을 이동하지 않습니다. 모든 프레임에 같은 t2m color limits와 같은
+u10/v10 quiver scale·m/s key를 쓰고, ensemble mean(또는 `--member N`), spread, error,
+인접 valid time의 `delta state / delta physical hour`를 한 MP4/GIF에 저장합니다.
+JSON에는 lead별 RMSE/CRPS, u/v vector RMSE, anomaly 크기, member별 변화율과 이동하지 않은
+lag 진단이 포함됩니다.
+
+기존 forecast를 진단하려면:
+
+```bash
+diagnose-climate-time \
+  --forecast outputs/climate-flow-forecast.npz \
+  --archive /data/era5-fixed-6h.npz \
+  --variable t2m --u-name u10 --v-name v10 \
+  --output outputs/time-alignment/comparison.mp4 \
+  --report outputs/time-alignment/diagnostics.json
+```
+
+checkpoint에서 archive 내부의 과거 origin을 지정해 예측과 미래 정답을 함께 점검하려면:
+
+```bash
+diagnose-climate-time \
+  --checkpoint /checkpoints/manifold-moe.pt \
+  --archive /data/era5-fixed-6h.npz \
+  --origin-time 2018-11-16T06:00:00Z \
+  --ensemble-size 8 --integration-steps 8 --forecast-steps 120 \
+  --forecast-output outputs/time-alignment/forecast.npz \
+  --output outputs/time-alignment/comparison.mp4
+```
+
+원자료가 없는 CPU 환경의 moving-field 계약 검증은
+`python scripts/smoke_time_alignment.py`로 재현합니다. 재생 `fps`는 보기 속도일 뿐
+모델 시간 보정값이 아닙니다. 생성 ODE의 `dq/dtau`, 물리 시각의 `dX/dt`, 그리고
+u10/v10 풍속(m/s)은 서로 다른 양입니다. 현재 MoE는 같은 member noise를 lead 사이에
+재사용하지만 leadwise conditional marginal을 학습하므로 joint physical trajectory law를
+학습했다고 해석하지 않습니다. 흐름은 [Mermaid](struct-picture/08-time-alignment.md)에 있습니다.
+
 ## 보존된 경로: Full-state Flow Matching MoE
 
 `train-climate-moe`는 전체 기상 state의 regime/mode expert들과 meta learner를

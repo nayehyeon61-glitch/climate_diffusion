@@ -12,6 +12,7 @@ from climate_diffusion.manifold_moe import ManifoldMoE, ManifoldMoEConfig, tange
 from climate_diffusion.fixed_step_data import prepare_fixed_step_archive
 from climate_diffusion.moe_data import load_moe_archive
 from climate_diffusion.train_manifold_moe import train_manifold_moe
+from climate_diffusion.train_manifold_moe import _pairs as manifold_training_pairs
 from climate_diffusion.inference import LatentFlowForecaster, main as forecast_main
 from climate_diffusion.evaluation import evaluate_flow_checkpoint
 from climate_diffusion.weather_adapter import FlowMatchingWeatherRunner
@@ -124,6 +125,17 @@ def test_same_member_inputs_and_one_intrinsic_ode():
     q = torch.randn(2,3)
     out = m.integrate(q,torch.zeros(2,4),torch.ones(2),integration_steps=2)
     torch.testing.assert_close(out,q*(1+0.5*0.5+0.5*(0.5*0.5)**2)**2)
+
+
+def test_manifold_training_adjacent_leads_share_intrinsic_source():
+    m = model().eval()
+    batch = {"history": torch.randn(2, 3, 32), "targets": torch.randn(2, 3, 32)}
+    _, velocity, _, _, lead, _ = manifold_training_pairs(
+        m, batch, torch.Generator().manual_seed(4), 3)
+    code = m.encode(batch["targets"].reshape(-1, 32)).detach()
+    source = (code - velocity).reshape(2, 3, -1)
+    torch.testing.assert_close(source[:, :1].expand_as(source), source)
+    torch.testing.assert_close(lead.reshape(2, 3).diff(dim=1), torch.full((2, 2), 1 / 3))
 
 
 def test_physics_reconstruction_does_not_impose_incompressibility():

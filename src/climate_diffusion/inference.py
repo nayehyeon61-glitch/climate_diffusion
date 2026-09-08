@@ -211,13 +211,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
+    origin_time = times[-1].astype("datetime64[ns]")
+    lead_hours = np.arange(1, predictions.shape[1] + 1) * forecaster.forecast_step_hours
     np.savez_compressed(
         output,
         predictions=predictions,
-        last_history_time=times[-1],
-        lead_hours=np.arange(1, predictions.shape[1] + 1) * forecaster.forecast_step_hours,
+        origin_time=origin_time,
+        last_history_time=origin_time,  # backward-compatible alias
+        lead_hours=lead_hours,
+        valid_times=origin_time + lead_hours.astype("timedelta64[h]"),
         checkpoint=str(forecaster.checkpoint_path),
         forecast_step_hours=np.asarray(forecaster.forecast_step_hours, dtype=np.int64),
+        time_contract=np.asarray("valid_time = origin_time + lead_hours; exact UTC snapshots"),
+        sampling_contract=np.asarray(forecaster.training_metadata.get(
+            "sampling_contract", "unspecified")),
         moe_mode=str(args.moe_mode or ("local" if forecaster.is_manifold else
                                       forecaster.model.stage if forecaster.is_moe else "")),
     )

@@ -16,6 +16,7 @@ from climate_diffusion.moe_data import build_moe_split, load_moe_archive, valida
 from climate_diffusion.data import vectorize_dataset
 from climate_diffusion.fixed_step_data import prepare_fixed_step_archive
 from climate_diffusion.train_moe import train_moe
+from climate_diffusion.train_moe import _pairs as training_pairs
 from climate_diffusion.inference import LatentFlowForecaster, main as forecast_main
 from climate_diffusion.evaluation import evaluate_flow_checkpoint
 from climate_diffusion.weather_adapter import FlowMatchingWeatherRunner
@@ -100,6 +101,16 @@ def test_member_noise_and_reproducibility():
     assert not torch.equal(full, predict(8, [0, 1, 2]))
     with pytest.raises(ValueError, match="lead_indices"):
         predict(7, [3])
+
+
+def test_training_adjacent_leads_reuse_member_source_noise():
+    m = FlowMatchingMoE(config()).eval()
+    batch = {"history": torch.randn(2, 3, 8), "targets": torch.randn(2, 3, 8)}
+    _, velocity, _, _, lead, target = training_pairs(
+        m, batch, torch.Generator().manual_seed(3), 3)
+    source = (target - velocity).reshape(2, 3, 8)
+    torch.testing.assert_close(source[:, :1].expand_as(source), source)
+    torch.testing.assert_close(lead.reshape(2, 3).diff(dim=1), torch.full((2, 2), 1 / 3))
 
 
 def test_frozen_experts_and_meta_gradient_finite_difference():
