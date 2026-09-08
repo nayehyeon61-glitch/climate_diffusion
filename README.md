@@ -11,7 +11,22 @@
 다음 달 state 사이의 확률 흐름 ODE를 학습한다는 점에서 latent generative forecast
 역할을 수행합니다.
 
-## 추가: Full-state Flow Matching MoE
+## 최종 추가: Physics-informed Manifold MoE Ensemble
+
+`train-climate-manifold-moe`는 **A: PI-AE 상태 좌표 학습 → B: 국소 expert 분업 → C: 작은 LR의
+공동 보정**을 실행합니다. 고정 chart prior와 expert-error responsibility로 담당 영역을
+유도하고, 각 full-state 후보를 decoder Jacobian으로 투영한 뒤 하나의 intrinsic ODE에서
+결합·적분합니다. 기존 자유로운 meta residual은 이 경로에서 사용하지 않습니다.
+
+[설계 → 시각화 → 실행 명령](flow-matching_moe/MANIFOLD_README.md),
+[학습 Mermaid](struct-picture/06-manifold-training.md),
+[추론 Mermaid](struct-picture/07-manifold-inference.md),
+[실제 A50/B40/C10 합성 결과와 한계](docs/results/manifold-smoke/README.md)를 참고하세요.
+빠른 재현은 `python scripts/smoke_manifold_moe.py`와 `python scripts/visualize_manifold_moe.py`입니다.
+기존 `smoke_moe.py`는 아래 이전 모델을 실행합니다. Manifold는 decoder의 학습된 상태 표현이며
+정확한 대기 PDE 해공간임을 보장하지 않습니다. 실제 ERA5 장기 학습은 아직 실행하지 않았습니다.
+
+## 보존된 경로: Full-state Flow Matching MoE
 
 `train-climate-moe`는 전체 기상 state의 regime/mode expert들과 meta learner를
 **두 단계로 학습**합니다. Expert AE64 → velocity IDCT → Meta AE160 → member별

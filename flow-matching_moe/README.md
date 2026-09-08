@@ -1,5 +1,9 @@
 # Full-state Flow Matching MoE
 
+**최종 manifold 구조는 [MANIFOLD_README.md](MANIFOLD_README.md)에 있습니다.**
+`train-climate-manifold-moe` / `smoke_manifold_moe.py`를 사용합니다. 아래는 보존한
+이전 `train-climate-moe`의 2-stage Meta160 경로이며 최종 manifold 학습 명령과 다릅니다.
+
 `feature/latent-dynamics-flow`의 추가 학습 경로입니다. 기존 dynamics/monthly 모델,
 WeatherNext runner, 이전 실험 결과는 유지합니다. 학습 진입점은 **`train-climate-moe`**입니다.
 기존 `train-climate-dynamics` 명령은 MoE를 학습하지 않습니다.

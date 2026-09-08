@@ -1,6 +1,33 @@
-# Climate Flow: Dynamics 및 Full-state MoE 구조
+# Climate Flow: Manifold MoE, Full-state MoE 및 Dynamics 구조
 
-## 최신 추가 경로: Full-state Flow Matching MoE
+## 최종 추가 경로: Physics-informed Manifold MoE
+
+- [06-manifold-training.md](06-manifold-training.md): A/B/C, 지역 responsibility, physics와 gradient
+- [07-manifold-inference.md](07-manifold-inference.md): Jacobian projection, 동일 member coupling, intrinsic ODE
+- [설계 → 시각화 → 실행 README](../flow-matching_moe/MANIFOLD_README.md)
+- [실제 학습 그림·영역별 expert 오차·한계](../docs/results/manifold-smoke/README.md)
+
+```mermaid
+flowchart TB
+    H["기상 history"] --> PI["PI encoder와 history-time DCT"]
+    N["Member별 독립 intrinsic noise"] --> Q["현재 공유 상태 q_tau"]
+    Q --> E["Decoder와 K full-state local experts"]
+    PI --> E
+    E --> P["Velocity IDCT와 decoder-Jacobian tangent lift"]
+    Q --> G["Local chart prior와 bounded gate"]
+    PI --> G
+    P --> F["Simplex weighted intrinsic field"]
+    G --> F
+    F --> O["하나의 최종 ODE per member"]
+    O --> Q
+    O --> D["Decoder와 역정규화: ensemble forecast"]
+```
+
+영역은 위도·경도 구획이 아니라 기상 state의 잠재공간입니다. A의 PI embedding, B의
+국소 expert 학습, C의 작은 LR 공동 보정이 최종 경로입니다. 아래 이전 Meta160 경로와
+checkpoint format을 구분하며 이전 실험을 보존합니다.
+
+## 보존된 경로: Full-state Flow Matching MoE
 
 - [04-moe-training.md](04-moe-training.md): DCT/IDCT 좌표, AE64/160, 두 단계 loss·freeze·split
 - [05-moe-inference.md](05-moe-inference.md): 저장 모델과 member별 **fusion 후 적분**

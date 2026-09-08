@@ -16,6 +16,7 @@ from .model import MonthlyLatentFlow
 from .dynamics import DynamicsModelConfig, LatentDynamicsFlow
 from .moe import MOE_FORMAT, FlowMatchingMoE, MoEConfig
 from .moe_data import load_moe_archive
+from .manifold_moe import MANIFOLD_FORMAT, ManifoldMoE, ManifoldMoEConfig
 
 
 class LatentFlowForecaster:
@@ -37,15 +38,19 @@ class LatentFlowForecaster:
             "climate_diffusion.latent_flow.v3",
             "climate_diffusion.latent_dynamics_flow.v1",
             MOE_FORMAT,
+            MANIFOLD_FORMAT,
         }:
             raise ValueError("Unsupported climate flow checkpoint format")
-        self.is_moe = payload["format"] == MOE_FORMAT
+        self.is_manifold = payload["format"] == MANIFOLD_FORMAT
+        self.is_moe = self.is_manifold or payload["format"] == MOE_FORMAT
         # is_dynamics denotes the bounded, strided, multi-lead temporal contract.
         self.is_dynamics = self.is_moe or payload["format"] == "climate_diffusion.latent_dynamics_flow.v1"
-        config_class = MoEConfig if self.is_moe else DynamicsModelConfig if self.is_dynamics else FlowModelConfig
+        config_class = (ManifoldMoEConfig if self.is_manifold else MoEConfig if self.is_moe
+                        else DynamicsModelConfig if self.is_dynamics else FlowModelConfig)
         model_class = FlowMatchingMoE if self.is_moe else LatentDynamicsFlow if self.is_dynamics else MonthlyLatentFlow
         self.config = config_class(**payload["model_config"])
-        self.model = model_class(self.config).to(self.device)
+        self.model = (ManifoldMoE(self.config, payload["schema"], payload["state_mean"], payload["state_scale"])
+                      if self.is_manifold else model_class(self.config)).to(self.device)
         self.history_steps = self.config.history_steps if self.is_dynamics else self.config.history_months
         self.history_stride = self.config.history_stride if self.is_dynamics else 1
         self.history_span_steps = (self.history_steps - 1) * self.history_stride + 1
@@ -120,7 +125,7 @@ class LatentFlowForecaster:
         result = values * self.state_scale + self.state_mean
         return result.detach().cpu().numpy().astype(np.float32)
 
-    @torch.inference_mode()
+    @torch.no_grad()  # Manifold decoder Jacobians require forward-mode AD during sampling.
     def forecast(
         self,
         history_states: np.ndarray,
@@ -143,7 +148,7 @@ class LatentFlowForecaster:
             raise ValueError("History states must be finite")
         if moe_mode is not None and not self.is_moe:
             raise ValueError("moe_mode is only supported by MoE checkpoints")
-        if self.is_moe and moe_mode == "meta" and self.model.stage != "meta":
+        if self.is_moe and not self.is_manifold and moe_mode == "meta" and self.model.stage != "meta":
             raise ValueError("Meta inference requires a completed meta-stage checkpoint")
         normalized = self._normalise(history)
         if self.is_dynamics:
@@ -185,11 +190,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ensemble-size", type=int, default=1)
     parser.add_argument("--integration-steps", type=int, default=32)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--moe-mode", choices=("experts", "meta", "uniform"))
+    parser.add_argument("--device", help="Inference device, e.g. cpu or cuda; default selects automatically")
+    parser.add_argument("--moe-mode", help="MoE: experts/meta/uniform; manifold: local/uniform/expert:<index>")
     parser.add_argument("--output", default="outputs/climate-flow-forecast.npz")
     args = parser.parse_args(argv)
 
-    forecaster = LatentFlowForecaster(args.checkpoint)
+    forecaster = LatentFlowForecaster(args.checkpoint, device=args.device)
     loader = load_moe_archive if forecaster.is_moe else load_monthly_archive
     states, times, schema = loader(args.archive)
     forecaster.validate_archive(schema, times)
@@ -212,7 +218,8 @@ def main(argv: list[str] | None = None) -> int:
         lead_hours=np.arange(1, predictions.shape[1] + 1) * forecaster.forecast_step_hours,
         checkpoint=str(forecaster.checkpoint_path),
         forecast_step_hours=np.asarray(forecaster.forecast_step_hours, dtype=np.int64),
-        moe_mode=str(args.moe_mode or (forecaster.model.stage if forecaster.is_moe else "")),
+        moe_mode=str(args.moe_mode or ("local" if forecaster.is_manifold else
+                                      forecaster.model.stage if forecaster.is_moe else "")),
     )
     print(output)
     return 0

@@ -86,6 +86,8 @@ def evaluate_flow_checkpoint(
 
     predictions, targets = [], []
     case_rows: list[dict[str, Any]] = []
+    rank_counts = np.zeros(ensemble_size + 1, dtype=np.int64)
+    rank_generator = np.random.default_rng(seed + 100000)
     for case_number, start in enumerate(test_indices):
         target_index = start + history_months + lead_months - 1
         target_end = target_index + horizon
@@ -124,6 +126,14 @@ def evaluate_flow_checkpoint(
             accuracy = np.linalg.norm(normalized_samples - normalized_target[None], axis=-1).mean()
             pairwise = np.linalg.norm(normalized_samples[:, None] - normalized_samples[None, :], axis=-1).mean()
             case_metrics["energy"] = float((accuracy - 0.5 * pairwise) / np.sqrt(states.shape[1]))
+        if forecaster.is_manifold:
+            low, high = np.quantile(normalized_samples, [0.1, 0.9], axis=0)
+            case_metrics["coverage_80"] = float(((normalized_target >= low) & (normalized_target <= high)).mean())
+            case_metrics["mean_variance"] = float(normalized_samples.var(axis=0).mean())
+            below = (normalized_samples < normalized_target[None]).sum(axis=0)
+            ties = (normalized_samples == normalized_target[None]).sum(axis=0)
+            ranks = below + np.floor(rank_generator.random(ties.shape) * (ties + 1)).astype(int)
+            rank_counts += np.bincount(ranks.ravel(), minlength=ensemble_size + 1)
         predictions.append(ensemble_mean)
         targets.append(target)
 
@@ -183,10 +193,18 @@ def evaluate_flow_checkpoint(
         ]
     if forecaster.is_moe:
         result["format"] = "climate_diffusion.moe_evaluation.v1"
-        result["moe_mode"] = moe_mode or forecaster.model.stage
+        result["moe_mode"] = moe_mode or ("local" if forecaster.is_manifold else forecaster.model.stage)
         result["sampling_contract"] = training["sampling_contract"]
         result["normalized_overall"]["energy"] = float(np.mean([row["energy"] for row in case_rows]))
         result["probabilistic_score_estimator"] = "empirical (diagonal pairs included), not training fair estimator"
+    if forecaster.is_manifold:
+        result["format"] = "climate_diffusion.manifold_moe_evaluation.v1"
+        result["stage"] = forecaster.model.stage
+        result["rank_histogram_counts"] = rank_counts.tolist()
+        result["rank_histogram_contract"] = "pooled scalar coordinates/leads; randomized ties; correlated samples"
+        overall["coverage_80"] = float(np.mean([row["coverage_80"] for row in case_rows]))
+        overall["rms_spread"] = float(np.sqrt(np.mean([row["mean_variance"] for row in case_rows])))
+        overall["spread_skill_ratio"] = overall["rms_spread"] / overall["rmse"] if overall["rmse"] > 0 else None
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
@@ -204,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device")
     parser.add_argument("--max-cases", type=int)
-    parser.add_argument("--moe-mode", choices=("experts", "meta", "uniform"))
+    parser.add_argument("--moe-mode", help="MoE: experts/meta/uniform; manifold: local/uniform/expert:<index>")
     parser.add_argument("--output", default="outputs/monthly-flow-evaluation.json")
     args = parser.parse_args(argv)
     path = evaluate_flow_checkpoint(
