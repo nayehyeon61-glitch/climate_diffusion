@@ -4,6 +4,7 @@
 이전 AE64 + Meta160 모델을 실행합니다. 최종 구조 재현에는 **`smoke_manifold_moe.py`**를
 사용하세요. 이전 코드·checkpoint·실험은 보존하며 자동 변환하지 않습니다.
 
+- **[처음부터 따라 하는 학습 README: 설치 → 데이터 → A/B/C → 영상 → 평가 → 추론](TRAINING_README.md)**
 - [설계와 A/B/C 학습 Mermaid](../struct-picture/06-manifold-training.md)
 - [접공간 투영과 member별 추론 Mermaid](../struct-picture/07-manifold-inference.md)
 - [실제 합성 학습 결과·한계](../docs/results/manifold-smoke/README.md)
@@ -113,7 +114,7 @@ Gate는 `CE(r,pi)`로 학습하고 expert는 `sum r_k MSE(a_k,u)`로 학습합�
 공통 대기 dynamics까지 서로 직교시키지 않습니다. Cosine>0.95인 후보에만 작은 overlap-weighted
 penalty를 주며, spread를 무한히 증가시키는 음의 분산 보상은 없습니다.
 
-## 4. A → 시각화 → B → 시각화 → C → 평가
+## 4. A → B → C → validation 영상 → 최종 test 평가
 
 | 단계 | 학습 대상 | 목적함수 / 선택 |
 |---|---|---|
@@ -136,129 +137,36 @@ Ensemble loss는 **differentiable midpoint ODE의 실제 endpoint**에서 계산
 Normalization, physics scales, latent scales, chart centers, PCA는 train에서만 fit합니다.
 B/C는 동일 archive SHA/schema를 요구하고 학습·추론·평가가 같은 통계를 재사용합니다.
 
-### 설치와 먼저 실행할 smoke
+### 실행 명령은 단계별 학습 README를 사용하세요
 
-```bash
-git clone --branch feature/latent-dynamics-flow --single-branch \
-  https://github.com/nayehyeon61-glitch/climate_diffusion.git climate_diffusion_manifold
-cd climate_diffusion_manifold
-python -m pip install -e '.[io,test,plots]'
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest -q
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python scripts/smoke_manifold_moe.py
-python scripts/visualize_manifold_moe.py
-```
+설치·archive 검사부터 A/B/C·시간 비교 영상·평가·추론까지의 명령은
+**[TRAINING_README.md](TRAINING_README.md)**에서 순서대로 실행합니다.
+해당 안내는 B/C에 `--sampled-leads 2`를 명시해 연속 lead의 FM source noise를 공유합니다.
+이 처리는 별도의 `Δstate/Δtime` trajectory loss를 추가한 것은 아닙니다.
 
-기존 checkout이면 수정/실험을 보존한 상태에서 `git pull --ff-only` 후 package를 다시
-설치하세요. `git clone` 줄 끝의 `\`를 생략해 URL을 다음 명령으로 실행하지 마세요.
-Smoke는 A50/B40/C10 epoch이며 `outputs/manifold-smoke/`에 archive와 checkpoint,
-`docs/results/manifold-smoke/`에 로그, `docs/figures/manifold-smoke/`에 그림을 씁니다.
-같은 경로 재실행은 해당 smoke 파일을 덮어씁니다. 실험 보존에는 새 `--work-dir`,
-`--report-dir`와 visualize의 `--output-dir`/입력 JSON 경로를 사용하세요.
+| 현재 단계 | 입력 → 출력 | 다음 단계 전 확인 |
+|---|---|---|
+| A manifold | 고정 archive → `stage_a.pt` | PI validation, reconstruction/physics/metric |
+| B specialize | 같은 archive + A → `stage_b.pt` | FM/expert loss, gate 사용률, expert_validation Energy/CRPS |
+| C joint | 같은 archive + B → `final.pt` | validation Energy/CRPS, anchor/PI와 ensemble spread |
+| Validation 영상 | C + 과거 validation origin → NPZ/MP4/JSON | valid time, u/v, 변화량/hour, mean과 member 차이 |
+| 최종 평가 | 설정 확정 후 C → test 지표·전문화 그림 | local/uniform 비교, 영역별 expert 오차 |
 
-### 실제 ERA5 / 기존 RunPod: 데이터 준비
+현재 `manifold_diagnostics`는 test split을 사용하므로 최종 평가에 배치했습니다.
+PCA의 색 분리만으로 전문화를 주장하지 않습니다. Teacher-forced FM 오차와 정답을 보지 않는
+생성 ODE의 usage/cosine/spread는 서로 다른 측정입니다. 전문화 진단은 최종 physical lead
+표본에 한정되며, 모든 lead의 전문화를 입증하지 않습니다.
 
-아래 경로는 보유한 실제 파일에 맞추세요. 새 유료 자원을 생성하지 않습니다.
+입력은 같은 lat/lon grid의 2D fields, `msl` Pa, `t2m` K, `u10/v10` m/s입니다.
+원자료의 변수 attrs는 archive schema에 보존하지만 단위 검증·변환은 자동 수행하지 않습니다.
+격자는 단조롭고 각 축 2칸 이상이며 정확한 극점을 제외해야 합니다. 관측 mask나 연속 시간
+계약을 만족하지 못하면 fail-fast합니다. 상층 pressure-level 축은 자동 지원하지 않습니다.
 
-```bash
-prepare-climate-fixed-step-data \
-  --fields /workspace/data/era5_surface_6h.zarr \
-  --variables msl t2m u10 v10 \
-  --step-hours 6 --target-lat-points 18 --target-lon-points 36 \
-  --output /workspace/data/era5_manifold_6h.npz
-
-MANIFOLD_ARCHIVE=/workspace/data/era5_manifold_6h.npz
-MANIFOLD_RUN=/workspace/outputs/manifold_run_001
-mkdir -p "$MANIFOLD_RUN"
-```
-
-입력은 동일 lat/lon grid의 2D fields, `msl` Pa, `t2m` K, `u10/v10` m/s여야 합니다.
-단위 변환은 자동 수행하지 않으며 archive가 단위 metadata를 강제 보존하지 않으므로 원자료에서
-확인해야 합니다. 위도·경도는 단조롭고 각 축 2칸 이상, 정확한 극점이 없는 grid를 요구합니다.
-연속 시간·forecast-step/schema/observed_mask 계약은 기존 loader를 재사용하며 missing mask나
-관측되지 않은 셀은 **fail-fast**합니다. 상층 pressure-level 축을 자동 지원하지 않습니다.
-30일 horizon의 five-way purge를 감당하는 충분한 연속 장기 기록이 필요합니다.
-
-### A: manifold 먼저 학습하고 그림 확인
-
-```bash
-train-climate-manifold-moe --archive "$MANIFOLD_ARCHIVE" \
-  --output "$MANIFOLD_RUN/stage_a.pt" --stage manifold \
-  --history-steps 6 --history-stride 4 --horizon-steps 120 \
-  --num-experts 4 --manifold-dim 16 --expert-latent-dim 64 --gate-hidden-dim 160 \
-  --manifold-epochs 50 --batch-size 8 --window-stride 4 --device cuda
-
-python -m climate_diffusion.manifold_diagnostics \
-  --archive "$MANIFOLD_ARCHIVE" --checkpoint "$MANIFOLD_RUN/stage_a.pt" \
-  --output "$MANIFOLD_RUN/diagnostics-a.json" --device cuda
-python scripts/visualize_manifold_moe.py \
-  --diagnostics "$MANIFOLD_RUN/diagnostics-a.json" \
-  --metrics "$MANIFOLD_RUN/stage_a.metrics.json" --evaluation '' \
-  --output-dir "$MANIFOLD_RUN/figures-a"
-```
-
-A 그림은 train-fit PCA와 chart 중심·물리 신호입니다. 색이 분리됐다는 사실만으로 expert
-전문화를 주장할 수 없습니다. A checkpoint에는 아직 학습한 flow가 없어 forecast를 거부합니다.
-History stride 4는 24시간 관측 간격, 6개 history span은 5일입니다.
-
-### B: 영역별 expert 학습 후 분업 측정
-
-```bash
-train-climate-manifold-moe --archive "$MANIFOLD_ARCHIVE" \
-  --output "$MANIFOLD_RUN/stage_b.pt" --stage specialize \
-  --init-checkpoint "$MANIFOLD_RUN/stage_a.pt" \
-  --expert-epochs 40 --batch-size 2 --window-stride 4 \
-  --ensemble-size 4 --sampled-leads 1 --integration-steps 4 --device cuda
-
-python -m climate_diffusion.manifold_diagnostics \
-  --archive "$MANIFOLD_ARCHIVE" --checkpoint "$MANIFOLD_RUN/stage_b.pt" \
-  --output "$MANIFOLD_RUN/diagnostics-b.json" --members 4 --integration-steps 8 --device cuda
-python scripts/visualize_manifold_moe.py \
-  --diagnostics "$MANIFOLD_RUN/diagnostics-b.json" \
-  --metrics "$MANIFOLD_RUN/stage_b.metrics.json" --evaluation '' \
-  --output-dir "$MANIFOLD_RUN/figures-b"
-```
-
-영역별 expert 오차 행렬에서 해당 expert가 실제로 더 정확한지 확인합니다. Teacher-forced FM
-오차 audit와 정답을 보지 않은 생성 ODE의 usage/cosine/spread audit는 서로 다른 측정입니다.
-현재 진단은 **최종 physical lead**의 표본으로 제한되며, 모든 lead의 전문화를 입증하지 않습니다.
-
-### C: 낮은 LR의 공동 보정, 동일 조건 평가
-
-```bash
-train-climate-manifold-moe --archive "$MANIFOLD_ARCHIVE" \
-  --output "$MANIFOLD_RUN/final.pt" --stage joint \
-  --init-checkpoint "$MANIFOLD_RUN/stage_b.pt" \
-  --joint-epochs 10 --batch-size 2 --window-stride 4 \
-  --learning-rate 0.001 --joint-lr-factor 0.1 --encoder-lr-factor 0.1 \
-  --ensemble-size 4 --sampled-leads 1 --integration-steps 4 --device cuda
-
-evaluate-climate-flow --checkpoint "$MANIFOLD_RUN/final.pt" \
-  --archive "$MANIFOLD_ARCHIVE" --output "$MANIFOLD_RUN/evaluation-local.json" \
-  --moe-mode local --ensemble-size 8 --integration-steps 16 --max-cases 32 --seed 83 --device cuda
-evaluate-climate-flow --checkpoint "$MANIFOLD_RUN/final.pt" \
-  --archive "$MANIFOLD_ARCHIVE" --output "$MANIFOLD_RUN/evaluation-uniform.json" \
-  --moe-mode uniform --ensemble-size 8 --integration-steps 16 --max-cases 32 --seed 83 --device cuda
-python -m climate_diffusion.manifold_diagnostics \
-  --archive "$MANIFOLD_ARCHIVE" --checkpoint "$MANIFOLD_RUN/final.pt" \
-  --output "$MANIFOLD_RUN/diagnostics-c.json" --members 4 --integration-steps 8 --device cuda
-python scripts/visualize_manifold_moe.py \
-  --diagnostics "$MANIFOLD_RUN/diagnostics-c.json" \
-  --metrics "$MANIFOLD_RUN/final.metrics.json" \
-  --evaluation "$MANIFOLD_RUN/evaluation-local.json" --output-dir "$MANIFOLD_RUN/figures-c"
-
-forecast-climate-flow --checkpoint "$MANIFOLD_RUN/final.pt" \
-  --archive "$MANIFOLD_ARCHIVE" --output "$MANIFOLD_RUN/forecast.npz" \
-  --moe-mode local --ensemble-size 8 --integration-steps 16 --device cuda
-```
-
-CLI가 PATH에 없으면 `python -m climate_diffusion.train_manifold_moe`,
-`python -m climate_diffusion.evaluation`, `python -m climate_diffusion.inference`로 실행하세요.
-B/C는 직전 phase의 checkpoint 설정을 계승하므로 다른 모델 차원을 지정하면 거부합니다.
-`--stage all`은 3단계를 자동 연결합니다. 단독 phase의 metrics는 해당 phase만, all의 최종
-metrics는 3단계를 포함합니다. Stage 전환 재로드는 지원하며 optimizer/RNG까지 복원하는
-exact epoch resume는 미구현입니다. Checkpoint는 model/schema/normalization/geometry/physics
-통계/phase를 저장하고 manifest SHA를 검사합니다. 기존 weather adapter의
-`rollout(initial_state,horizon_hours)`에서도 읽을 수 있습니다.
+B/C는 직전 phase의 설정과 같은 archive SHA/schema를 계승합니다. `--stage all`은 A/B/C를
+자동 연결하며, 단독 실행의 metrics는 해당 phase만 담으므로 전체 학습 그림에는 세 파일을
+합칩니다. Stage 전환 재로드는 지원하지만 optimizer/RNG를 복원하는 exact resume는 없습니다.
+Checkpoint는 model/schema/normalization/geometry/physics 통계/phase와 manifest SHA를 저장합니다.
+기존 weather adapter의 `rollout(initial_state,horizon_hours)`에서도 읽을 수 있습니다.
 
 ## 5. 물리 제약·계산량·이후 보정 범위
 

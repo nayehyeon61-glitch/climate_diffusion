@@ -11,6 +11,18 @@
 다음 달 state 사이의 확률 흐름 ODE를 학습한다는 점에서 latent generative forecast
 역할을 수행합니다.
 
+## 처음 학습할 때의 실행 순서
+
+**현재 최종 Manifold MoE를 처음 실행한다면 [단계별 학습 README](flow-matching_moe/TRAINING_README.md)를
+1번부터 따라가세요.** 설치 → 합성 smoke → ERA5 archive 준비·검사 → A 학습(`stage_a.pt`) →
+B 전문화(`stage_b.pt`) → C ensemble 보정(`final.pt`) → validation 시간 비교 영상 →
+최종 test 평가·학습 그림 → 최신 관측의 미래 ensemble 저장 순서입니다.
+
+RunPod 명령, 각 단계의 입력/출력, 기존 checkpoint에서 시작할 위치, 중단 시 재실행 방법을
+함께 적었습니다. 연속 lead를 함께 뽑는 B/C 예시는 `--sampled-leads 2`를 사용합니다.
+현재 시간 변화율 **진단**은 구현되어 있지만, `Δstate/Δtime`을 직접 학습하는 별도
+trajectory loss가 추가된 것은 아닙니다. 코드 갱신만으로 기존 weight가 보정되지는 않습니다.
+
 ## 최종 추가: Physics-informed Manifold MoE Ensemble
 
 `train-climate-manifold-moe`는 **A: PI-AE 상태 좌표 학습 → B: 국소 expert 분업 → C: 작은 LR의
@@ -18,7 +30,7 @@
 유도하고, 각 full-state 후보를 decoder Jacobian으로 투영한 뒤 하나의 intrinsic ODE에서
 결합·적분합니다. 기존 자유로운 meta residual은 이 경로에서 사용하지 않습니다.
 
-[설계 → 시각화 → 실행 명령](flow-matching_moe/MANIFOLD_README.md),
+[구조·loss 상세](flow-matching_moe/MANIFOLD_README.md),
 [학습 Mermaid](struct-picture/06-manifold-training.md),
 [추론 Mermaid](struct-picture/07-manifold-inference.md),
 [실제 A50/B40/C10 합성 결과와 한계](docs/results/manifold-smoke/README.md)를 참고하세요.
@@ -47,7 +59,10 @@ diagnose-climate-time \
   --report outputs/time-alignment/diagnostics.json
 ```
 
-checkpoint에서 archive 내부의 과거 origin을 지정해 예측과 미래 정답을 함께 점검하려면:
+같은 archive의 마지막 관측 이후를 예측한 파일에는 비교할 미래 정답이 없습니다.
+Checkpoint에서 archive 내부의 과거 origin을 지정해 예측과 미래 정답을 함께 점검하려면
+아래 날짜를 실제 archive에 있는 날짜로 바꾸세요. Validation origin을 자동으로 고르는
+명령은 [학습 README의 7단계](flow-matching_moe/TRAINING_README.md#7-실제-미래-정답이-있는-validation-시점에서-영상-확인)에 있습니다.
 
 ```bash
 diagnose-climate-time \

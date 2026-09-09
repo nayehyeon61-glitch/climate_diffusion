@@ -1,6 +1,8 @@
 # Full-state Flow Matching MoE
 
 **최종 manifold 구조는 [MANIFOLD_README.md](MANIFOLD_README.md)에 있습니다.**
+처음 설치하고 실제 데이터를 학습하는 순서는 **[단계별 학습 README](TRAINING_README.md)**를
+따라가세요. A → B → C checkpoint 연결과 시간 비교 영상·최종 평가까지 포함합니다.
 `train-climate-manifold-moe` / `smoke_manifold_moe.py`를 사용합니다. 아래는 보존한
 이전 `train-climate-moe`의 2-stage Meta160 경로이며 최종 manifold 학습 명령과 다릅니다.
 
