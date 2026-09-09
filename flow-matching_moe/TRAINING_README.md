@@ -23,6 +23,10 @@
 독립 dynamics label 항목. 현재 sampler의 보정을 이런 loss의 구현으로 해석하지 마세요.
 기존 checkpoint는 코드 갱신만으로 재학습되지 않습니다.
 
+2026-09-09 추가: [State + Dynamics Matching 설계](../docs/training-mechanism/README.md)에
+사용자 실험 해석, paired endpoint/increment 확률 감독, 수정할 함수와 E0→E1→E2 실험을 정리했습니다.
+**아직 새 loss 구현은 아니며**, 아래 명령은 기존 objective를 학습합니다.
+
 ## 1. 처음 한 번: 코드와 실행 환경 준비
 
 RunPod의 기존 GPU 환경에서 새 폴더를 사용하는 예입니다. 원자료 다운로드나 유료 자원
@@ -213,7 +217,9 @@ python -m climate_diffusion.train_manifold_moe \
 
 이 설정의 C 학습률은 experts/gate/history `1e-4`, PI manifold `1e-5`입니다.
 최종 예측 모델은 **`final.pt`**입니다. Validation 지표로 C checkpoint를 선택합니다.
-메모리가 부족하면 먼저 batch2→1로 줄이되 연속 lead를 쓰려면 sampled-leads2를 유지합니다.
+메모리가 부족해도 A/C에서 무조건 batch2→1로 줄이지 마세요. 현재 metric loss는 batch1이면
+0이 됩니다. [자원·metric pair 주의사항](../docs/training-mechanism/RUNBOOK.md)을 먼저 확인하세요.
+연속 lead를 쓰려면 sampled-leads2를 유지합니다.
 
 현재 `_pairs()`는 연속 lead의 FM source를 공유합니다. C의 ensemble-score용 `_sample()`은
 flatten된 lead별로 새 noise를 뽑으므로 전체 ensemble 학습이 joint trajectory loss인 것은

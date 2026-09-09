@@ -1,0 +1,494 @@
+Flow Matching + MoE 학습 메커니즘 수정안
+========================================
+
+목표
+----
+현재 모델은 Flow Matching + MoE + Ensemble + Manifold 구조로 충분한 표현력을 가지고 있다고 판단한다.
+따라서 추가적인 모델 확장보다는, 실제 ERA5 데이터의 시간적 dynamics를 더 직접적으로 학습하도록
+데이터 처리와 학습 supervision을 수정하는 것을 핵심 방향으로 한다.
+
+핵심 원칙
+---------
+(1) 모델의 추가 확장 X
+(2) ERA5 데이터로부터 dynamics를 명시적으로 추출하는 과정 추가
+(3) DataLoader가 기존 state뿐 아니라 dynamics 항도 함께 제공하도록 수정
+
+
+1. 모델의 추가 확장 X
+----------------------
+
+현재 구조:
+    ERA5 / HRES
+        ↓
+    Encoder / Latent Manifold
+        ↓
+    MoE Flow Experts
+        ↓
+    Mixture Vector Field
+        ↓
+    Flow / ODE Integration
+        ↓
+    Ensemble
+        ↓
+    Meta Learner
+
+현재 관찰된 문제는 모델 capacity 부족보다는 학습 목표의 문제로 해석한다.
+
+특히 현재 vector field의 방향성 및 초기 구조는 어느 정도 형성되어 있지만,
+실제 ERA5 dynamics에 비해 시간적 변화량이 작고 rollout에서 변화가 느리게 나타나는 경향이 있다.
+
+이를 다음과 같이 표현할 수 있다.
+
+    ||v_pred|| < ||v_true||
+
+또는
+
+    x_hat_(t+1) - x_hat_t
+        <
+    x_(t+1) - x_t
+
+즉 모델이 현재 상태를 지나치게 오래 유지하는
+state persistence bias / excessive persistence 현상을 보일 가능성이 있다.
+
+따라서 새로운 expert, 새로운 network block, 추가 manifold module 등을 붙이기보다
+현재 모델이 실제 시간 변화량을 직접 학습하도록 supervision을 수정한다.
+
+
+2. 데이터에서 dynamics를 추출하는 과정 추가
+---------------------------------------------
+
+기존에는 시간 t에서의 state 자체를 중심으로 학습하였다.
+
+    x_t
+    x_(t+1)
+    x_(t+2)
+    ...
+
+이제는 연속된 state 사이의 차이를 explicit dynamics target으로 추가한다.
+
+첫 번째 dynamics 항:
+
+    Δx_(t+j)
+        =
+    x_(t+j+1) - x_(t+j)
+
+ERA5가 Δt = 6 hour 간격이라면 실제 시간 단위를 포함한 velocity를
+
+    v_(t+j)
+        =
+    [x_(t+j+1) - x_(t+j)] / Δt
+
+로 정의한다.
+
+ERA5 6시간 데이터의 경우:
+
+    v_(t+j)
+        =
+    [x_(t+j+6h) - x_(t+j)] / 6h
+
+
+이 항의 목적은 단순히 다음 state를 맞추는 것이 아니라
+
+    "현재 기상장이 실제로 얼마나 빠르게 변화하는가"
+
+를 모델이 직접 학습하도록 하는 것이다.
+
+
+2.1 Trajectory 기반 dynamics 추출
+---------------------------------
+
+학습 sample을 단일 pair
+
+    (x_t, x_(t+1))
+
+로만 두지 않고
+
+    x_t,
+    x_(t+1),
+    x_(t+2),
+    ...
+    x_(t+H)
+
+형태의 trajectory window로 구성한다.
+
+그 후 각 구간에서
+
+    Δx_t       = x_(t+1) - x_t
+    Δx_(t+1)   = x_(t+2) - x_(t+1)
+    ...
+    Δx_(t+H-1) = x_(t+H) - x_(t+H-1)
+
+를 계산한다.
+
+즉 하나의 sample이
+
+    State:
+        x_t, x_(t+1), ..., x_(t+H)
+
+    Dynamics:
+        Δx_t, Δx_(t+1), ..., Δx_(t+H-1)
+
+를 동시에 가진다.
+
+
+2.2 필요 시 2차 dynamics도 확장 가능
+-------------------------------------
+
+첫 번째 실험에서는 velocity / first difference를 우선 사용한다.
+
+추후 필요하다면
+
+    Δ²x_(t+j)
+        =
+    x_(t+j+2)
+    - 2 x_(t+j+1)
+    + x_(t+j)
+
+를 추가할 수 있다.
+
+이는 discrete acceleration 또는 vector field 변화량에 해당한다.
+
+하지만 초기 수정에서는 원인 분석을 명확하게 하기 위해
+우선 Δx 또는 velocity supervision만 추가하는 것을 권장한다.
+
+
+3. ERA5 DataLoader에 state + dynamics 항 추가
+---------------------------------------------
+
+기존 DataLoader가 대략 다음을 반환했다면
+
+    {
+        "x": x_t,
+        "target": x_(t+1)
+    }
+
+이를 trajectory 기반으로 확장한다.
+
+예시:
+
+    states = ERA5[t : t + horizon + 1]
+
+    trajectory = states
+    delta      = states[1:] - states[:-1]
+    velocity   = delta / dt_hours
+
+최종 DataLoader output 예시:
+
+    {
+        "x0": x_t,
+
+        "trajectory":
+            [x_t, x_(t+1), ..., x_(t+H)],
+
+        "delta":
+            [Δx_t, Δx_(t+1), ..., Δx_(t+H-1)],
+
+        "velocity":
+            [v_t, v_(t+1), ..., v_(t+H-1)],
+
+        "dt_hours": 6,
+
+        "valid_time": ...,
+        "variables": ...
+    }
+
+
+Tensor shape 예시:
+
+    trajectory:
+        [T+1, C, H, W]
+
+    delta:
+        [T, C, H, W]
+
+    velocity:
+        [T, C, H, W]
+
+
+4. Normalization 처리
+---------------------
+
+State normalization과 dynamics normalization은 구분해서 생각해야 한다.
+
+기존 state normalization:
+
+    x_norm
+        =
+    (x - μ_x) / σ_x
+
+Dynamics:
+
+    Δx
+        =
+    x_(t+1) - x_t
+
+normalized state의 차이는
+
+    Δx_norm
+        =
+    x_norm_(t+1) - x_norm_t
+        =
+    [x_(t+1) - x_t] / σ_x
+
+가 된다.
+
+하지만 variable마다 실제 시간 변화량의 scale이 크게 다르므로
+dynamics용 statistics를 별도로 계산하는 방법이 유용하다.
+
+각 variable v에 대해
+
+    σ_(Δx,v)
+        =
+    Std[x_(t+1)^v - x_t^v]
+
+를 계산하고
+
+    Δx_dyn_norm^v
+        =
+    Δx^v / (σ_(Δx,v) + ε)
+
+형태의 dynamics-specific normalization을 사용할 수 있다.
+
+즉
+
+    state normalization statistics
+        μ_x, σ_x
+
+와
+
+    dynamics normalization statistics
+        μ_Δx, σ_Δx
+
+를 분리 관리할 수 있다.
+
+
+5. 학습 메커니즘 수정
+---------------------
+
+기존 Flow Matching objective는 유지한다.
+
+    L_FM
+
+여기에 ERA5 실제 dynamics에 대한 supervision을 추가한다.
+
+예측 trajectory에서
+
+    Δx_hat_(t+j)
+        =
+    x_hat_(t+j+1) - x_hat_(t+j)
+
+를 계산하고 실제 ERA5 dynamics와 비교한다.
+
+    L_delta
+        =
+    Σ_j ||
+        Δx_hat_(t+j)
+        -
+        Δx_(t+j)
+    ||²
+
+시간 단위까지 포함하면
+
+    v_hat_(t+j)
+        =
+    [x_hat_(t+j+1) - x_hat_(t+j)] / Δt
+
+    v_true_(t+j)
+        =
+    [x_(t+j+1) - x_(t+j)] / Δt
+
+그리고
+
+    L_velocity
+        =
+    Σ_j ||v_hat_(t+j) - v_true_(t+j)||²
+
+
+6. 현재 문제에 대한 magnitude supervision
+----------------------------------------
+
+현재 문제는 vector direction 자체보다 dynamics magnitude가 작게 나타나는 현상에 더 가깝다.
+
+따라서 magnitude loss를 추가할 수 있다.
+
+    L_mag
+        =
+    Σ_j (
+        ||v_hat_(t+j)||
+        -
+        ||v_true_(t+j)||
+    )²
+
+direction loss는 필요 시 별도로 둔다.
+
+    L_dir
+        =
+    Σ_j [
+        1
+        -
+        cos(v_hat_(t+j), v_true_(t+j))
+    ]
+
+현재 초기 vector direction이 이미 잘 형성되어 있다면
+초기 실험에서는 magnitude supervision의 비중을 더 크게 둘 수 있다.
+
+
+7. Rollout에서 dynamics 감소 여부 진단
+---------------------------------------
+
+실제 문제를 정량적으로 확인하기 위해 각 rollout step에서
+
+    r_j
+        =
+    ||Δx_hat_(t+j)||
+    /
+    (||Δx_(t+j)|| + ε)
+
+를 측정한다.
+
+이상적인 경우:
+
+    r_j ≈ 1
+
+만약
+
+    r_0  ≈ 0.9
+    r_5  ≈ 0.7
+    r_10 ≈ 0.5
+    r_20 ≈ 0.3
+
+처럼 시간이 갈수록 감소한다면
+
+    progressive velocity damping
+
+또는
+
+    excessive state persistence
+
+가 발생하고 있다고 볼 수 있다.
+
+
+8. 최종 loss 방향
+------------------
+
+첫 번째 수정 단계에서는 모델 구조를 바꾸지 않고 아래 정도로 시작한다.
+
+    L_total
+        =
+    L_FM
+    +
+    λ_delta L_delta
+    +
+    λ_mag L_mag
+    +
+    λ_rollout L_rollout
+
+필요 시 이후
+
+    + λ_dir L_dir
+    + λ_acc L_acceleration
+    + λ_expert L_expert_specialization
+
+등을 추가한다.
+
+
+9. MoE와의 관계
+---------------
+
+현재 MoE 구조도 그대로 유지한다.
+
+중요한 것은 expert 수를 늘리는 것이 아니라
+각 expert가 올바른 dynamics magnitude를 학습하도록 하는 것이다.
+
+기존:
+
+    Expert_k:
+        v_k(z_t, t)
+
+유지.
+
+하지만 학습 target에는 실제 ERA5 temporal dynamics를 포함한다.
+
+즉 expert가 단순한 Flow Matching interpolation vector만 맞추는 것이 아니라
+
+    ERA5의 실제 state transition:
+        x_(t+j+1) - x_(t+j)
+
+를 반영하도록 학습한다.
+
+현재 routing / temperature / 초기 vector field 구조가 이미 안정적이라면
+우선 gate 구조를 변경하기보다 expert output의 temporal displacement를
+정확하게 맞추는 것을 먼저 실험한다.
+
+
+10. 최종 정리
+-------------
+
+이번 수정의 핵심은 architecture modification이 아니라
+training mechanism modification이다.
+
+[1] 모델의 추가 확장
+    하지 않는다.
+
+[2] 데이터 처리
+    ERA5 trajectory에서
+
+        x_(t+j+1) - x_(t+j)
+
+    를 계산하여 dynamics를 직접 추출한다.
+
+[3] DataLoader
+    기존 state에 더해
+
+        delta
+        velocity
+        dt
+
+    를 함께 반환한다.
+
+[4] 학습
+    기존 Flow Matching loss에
+
+        actual temporal displacement
+        velocity magnitude
+        rollout dynamics
+
+    supervision을 추가한다.
+
+결과적으로 학습 구조를
+
+    State Matching
+
+에서
+
+    State + Dynamics Matching
+
+으로 변경한다.
+
+
+핵심 식
+-------
+
+    Δx_(t+j)
+        =
+    x_(t+j+1) - x_(t+j)
+
+    v_(t+j)
+        =
+    Δx_(t+j) / Δt
+
+그리고 모델이 최종적으로 만족해야 할 조건은
+
+    x_hat_(t+j) ≈ x_(t+j)
+
+뿐 아니라
+
+    x_hat_(t+j+1) - x_hat_(t+j)
+        ≈
+    x_(t+j+1) - x_(t+j)
+
+가 되는 것이다.
+
+즉 모델이 단순히 기상장의 모양을 생성하는 것을 넘어
+ERA5가 실제 시간에 따라 변화하는 dynamics의 크기와 방향까지
+동시에 학습하도록 만드는 것이 이번 수정의 핵심이다.

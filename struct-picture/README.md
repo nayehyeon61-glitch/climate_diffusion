@@ -1,5 +1,14 @@
 # Climate Flow: Manifold MoE, Full-state MoE 및 Dynamics 구조
 
+## 학습 메커니즘 개선 설계 (2026-09-09, 아직 새 loss 미구현)
+
+- [09-dynamics-supervision-design.md](09-dynamics-supervision-design.md): 동일 member paired endpoints, 확률적 dynamics loss와 gradient
+- [10-dynamics-data-and-stages.md](10-dynamics-data-and-stages.md): DataLoader shape, 두 시간축, 실험 순서와 후속 12h 출력
+- [설계·코드 위치·검증 계획](../docs/training-mechanism/README.md)
+
+아래 구현된 manifold architecture는 유지합니다. 새 문서를 읽는 것만으로 기존 checkpoint가
+재학습되거나 새 dynamics loss가 활성화되지는 않습니다.
+
 ## 최종 추가 경로: Physics-informed Manifold MoE
 
 - [06-manifold-training.md](06-manifold-training.md): A/B/C, 지역 responsibility, physics와 gradient
