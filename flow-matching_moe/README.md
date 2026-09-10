@@ -1,5 +1,7 @@
 # Full-state Flow Matching MoE
 
+**전체 실행 매뉴얼:** [TRAINING_MANUAL.md](TRAINING_MANUAL.md) — 환경·ERA5 준비부터 새 A→B→C, validation/test, member별 영상까지 순서대로 실행합니다.
+
 **새 dynamics loss + 120시간 trajectory + member별 영상:**
 [RETRAIN_120H.md](RETRAIN_120H.md)의 처음부터 재학습 순서를 사용하세요.
 실제 구현·합성 A/B/C 실행·비교 로그는 [검증 보고](../docs/results/temporal-120h-smoke/README.md)에 있습니다.

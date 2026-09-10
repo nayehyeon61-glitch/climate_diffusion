@@ -1,5 +1,7 @@
 # 처음부터 실행하는 Manifold MoE 학습 순서
 
+**120시간 전체 운영 매뉴얼:** [TRAINING_MANUAL.md](TRAINING_MANUAL.md)에서 단계별 명령과 완료 조건을 확인하세요.
+
 **2026-09-10 갱신:** 새 dynamics loss + 120시간 전면 재학습은
 [RETRAIN_120H.md](RETRAIN_120H.md)를 순서대로 실행하세요. 동일 member noise, loader의 delta/tendency,
 joint trajectory loss, 변수별 wind 보조항, 모든 member 출력이 구현됐습니다.

@@ -1,5 +1,7 @@
 # 120시간 State + Dynamics: 처음부터 재학습하기
 
+**실행 순서와 단계별 점검은 [TRAINING_MANUAL.md](TRAINING_MANUAL.md)를 먼저 읽으세요.** 아래는 데이터/loss 계약과 상세 참고입니다.
+
 이 문서는 **구현된** `Flow Matching + Physics-Informed Manifold MoE + Ensemble`의 새 학습 profile입니다.
 기존 네트워크/전문가 수/투영 구조를 유지하고 데이터·loss·sampling·평가·출력만 변경했습니다.
 120h는 5일이며 **6h × 20 step**입니다. 기존 `TRAINING_README.md`의 H=120은 720h/30일입니다.
@@ -22,10 +24,13 @@ python -m venv --system-site-packages .venv
 source .venv/bin/activate
 python -m pip install -e '.[test,plots,io]'
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest -q
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python scripts/smoke_temporal_moe.py
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python scripts/smoke_temporal_moe.py \
+  --work-dir outputs/temporal-120h-smoke-local \
+  --report-dir outputs/temporal-120h-smoke-local-report
 python scripts/visualize_temporal_moe.py \
-  --checkpoint outputs/temporal-120h-smoke/new-c.pt \
-  --archive outputs/temporal-120h-smoke/synthetic-states.npz
+  --report-dir outputs/temporal-120h-smoke-local-report \
+  --checkpoint outputs/temporal-120h-smoke-local/new-c.pt \
+  --archive outputs/temporal-120h-smoke-local/synthetic-states.npz
 ```
 
 RunPod 이미지의 기존 CUDA PyTorch를 유지하세요. MP4에는 OS의 `ffmpeg`가 필요하며,
