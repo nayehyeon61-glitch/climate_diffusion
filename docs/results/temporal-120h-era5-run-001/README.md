@@ -64,6 +64,15 @@ Test는 validation과 거의 같은 범위이므로 validation으로 고른 설�
 동시에 (c) 불확실성 보정과 (d) expert 전문화 모두 아직 약하다는 것도 같이 보여줍니다.
 이 수치들을 "물리적으로 의미 있는 regime 분리"나 "잘 보정된 확률 예측"의 증거로 해석하지 않습니다.
 
+## 그림
+
+`figures/training-abc.png`(A→B→C train loss·validation selection score, best epoch 표시),
+`figures/evaluation.png`(validation/test normalized RMSE vs persistence/climatology,
+CRPS/coverage/spread-skill), `figures/routing.png`(생성 경로 gate usage, candidate cosine
+등 전문화 진단). `scripts/visualize_era5_run.py`로 위 JSON만 읽어 생성했습니다 — 기존
+`visualize_manifold_moe.py`는 구버전 진단 스키마(`test_pca` 등)를 기대해서 현재
+`manifold_diagnostics.py` 출력과 맞지 않아 새로 작성했습니다.
+
 ## Member 영상/궤적
 
 `members-6h/`(20 frame, +6~+120h, MP4)와 `members-12h/`(10 frame, +12~+120h, GIF) 각각 8개
