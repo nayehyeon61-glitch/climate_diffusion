@@ -64,6 +64,29 @@ Test는 validation과 거의 같은 범위이므로 validation으로 고른 설�
 동시에 (c) 불확실성 보정과 (d) expert 전문화 모두 아직 약하다는 것도 같이 보여줍니다.
 이 수치들을 "물리적으로 의미 있는 regime 분리"나 "잘 보정된 확률 예측"의 증거로 해석하지 않습니다.
 
+## 첫 스텝 이후 사실상 정체(quasi-static) — member 영상에서 확인된 문제
+
+`members-12h/member-000.json`의 `amplitude_ratio`(예측 변화량 RMS / 실제 변화량 RMS,
+`prediction_tendency_rms`/`truth_tendency_rms`)를 보면, **+12h(첫 스텝)의 변화량 크기는
+실제와 비슷하지만(t2m 0.94, msl/u10/v10은 1.9~2.2로 다소 과함), +24h부터 +120h까지는
+실제 변화량의 3~8%만 만듭니다** (예: t2m 0.94 → 0.010~0.036, msl 2.16 → 0.033~0.084).
+즉 학습된 모델은 첫 물리적 lead에서만 의미 있게 움직이고 이후로는 거의 정지한 state
+근처에 머뭅니다 — 영상에서 "거의 안 움직인다"고 보이는 것은 착시가 아니라 이 현상입니다.
+`by_variable_ensemble.*.mean_tendency_rms`(summary.json)에서도 8개 member 평균으로
+같은 패턴이 재현됩니다.
+
+가능한 원인(검증하지 않은 가설):
+- B가 validation 개선 없이 epoch1에서 조기 종료됨 — expert가 다단계 dynamics를 충분히
+  학습하기 전에 멈췄을 수 있습니다.
+- `--trajectory-edges 2`로 학습 중에는 항상 전체 20구간(120h) 중 2구간짜리 sub-block만
+  보므로, 긴 구간에 걸쳐 움직임을 유지하도록 직접 감독하는 신호가 약합니다.
+- `trajectory-weight`(0.1)/`delta-weight`(0.02)가 작고 C가 10epoch뿐이라 전반적으로
+  undertrained일 수 있습니다.
+
+다음 실험에서는 trajectory-weight/delta-weight를 올리거나 B/C epoch을 늘려서, 그리고
+가능하면 `--trajectory-edges 0`(전체 20구간 joint loss)로 이 현상이 줄어드는지 확인하는
+것을 권장합니다.
+
 ## 그림
 
 `figures/training-abc.png`(A→B→C train loss·validation selection score, best epoch 표시),
