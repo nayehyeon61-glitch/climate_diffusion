@@ -1,0 +1,141 @@
+{
+  "experiment": "synthetic smoke only; no ERA5 or RunPod run",
+  "seed_data": 19,
+  "seed_training": 7,
+  "seed_evaluation": 83,
+  "state_shape": [
+    480,
+    4,
+    4,
+    8
+  ],
+  "history_span_steps": 6,
+  "horizon_steps": 8,
+  "horizon_hours": 48,
+  "model_config": {
+    "state_dim": 128,
+    "grid": [
+      4,
+      4,
+      8
+    ],
+    "history_steps": 6,
+    "history_stride": 1,
+    "horizon_steps": 8,
+    "step_hours": 6,
+    "num_experts": 3,
+    "expert_latent_dim": 64,
+    "meta_latent_dim": 160,
+    "hidden_dim": 64,
+    "context_dim": 32,
+    "time_embedding_dim": 32,
+    "residual_limit": 2.0
+  },
+  "parameter_count": 324070,
+  "experts_best_epoch": 37,
+  "meta_best_epoch": 1,
+  "frozen_parameters_exactly_equal": true,
+  "split_window_counts": {
+    "train": 231,
+    "expert_validation": 46,
+    "calibration": 70,
+    "validation": 46,
+    "test": 46
+  },
+  "normalization_span": [
+    0,
+    244
+  ],
+  "checkpoint_sha256": "f7b6eacce2f3283c180497812b96465c47bd6f9f2768b97ba364738d509ffc00",
+  "warmup_checkpoint_sha256": "f1d714cfdcde3a1d2e38b58d8c3730532b556ef5761bd8043dc6d6ec5a70afac",
+  "archive_sha256": "e0a66b5b0119b3125551dd9b3d87260c9d5d47964cb5521114f97315cb380f46",
+  "test": {
+    "experts": {
+      "mae": 0.5870009064674377,
+      "rmse": 0.7479732632637024,
+      "bias": -0.004335055127739906,
+      "crps": 0.4669017642736435,
+      "ensemble_spread": 0.9665025398135185,
+      "persistence_rmse": 0.8341327905654907,
+      "climatology_rmse": 1.0536350011825562,
+      "energy": 0.5762211655921033
+    },
+    "uniform": {
+      "mae": 0.6103833913803101,
+      "rmse": 0.7715482711791992,
+      "bias": -0.005069651175290346,
+      "crps": 0.4755459167063236,
+      "ensemble_spread": 0.9291733577847481,
+      "persistence_rmse": 0.8341327905654907,
+      "climatology_rmse": 1.0536350011825562,
+      "energy": 0.5876660316697593
+    },
+    "meta": {
+      "mae": 0.5817275643348694,
+      "rmse": 0.7421718239784241,
+      "bias": -0.005916104651987553,
+      "crps": 0.46167585253715515,
+      "ensemble_spread": 0.9379170909523964,
+      "persistence_rmse": 0.8341327905654907,
+      "climatology_rmse": 1.0536350011825562,
+      "energy": 0.5680464576853395
+    }
+  },
+  "routing": {
+    "population": "final lead; midpoint evaluations of generated test-member ODE paths",
+    "count": 512,
+    "router_mean": [
+      0.5718784928321838,
+      0.24122320115566254,
+      0.1868983507156372
+    ],
+    "router_std": [
+      0.44602206349372864,
+      0.3873140215873718,
+      0.3383193016052246
+    ],
+    "alpha_mean": [
+      0.3622279763221741,
+      0.3233259916305542,
+      0.31444603204727173
+    ],
+    "alpha_std": [
+      0.01406116597354412,
+      0.02117404155433178,
+      0.02801302634179592
+    ],
+    "router_entropy_nats": 0.19739440083503723,
+    "maximum_entropy_nats": 1.0986122886681098,
+    "candidate_cosine_mean": 0.7451910246163607,
+    "toy_regime_by_hard_router_counts": [
+      [
+        163,
+        0,
+        29
+      ],
+      [
+        140,
+        119,
+        61
+      ]
+    ],
+    "toy_regime_hard_router_mutual_information_nats": 0.14258315277111075,
+    "caution": "Correlated ODE samples; two hand-made mode labels, not evidence of meteorological regimes."
+  },
+  "elapsed_seconds": 10.231605187000014,
+  "peak_process_rss_mib": 406.65625,
+  "environment": {
+    "python": "3.12.13",
+    "torch": "2.14.0+cpu",
+    "numpy": "2.3.5",
+    "device": "cpu",
+    "threads": 1
+  },
+  "limits": [
+    "48-hour toy horizon, NOT 15-30 day climate skill",
+    "One seed and eight held-out windows; no significance claim",
+    "No joint-time trajectory objective or physical conservation constraint",
+    "No meteorological regime-specialization claim",
+    "No production GPU memory benchmark"
+  ]
+}

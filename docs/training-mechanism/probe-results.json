@@ -1,0 +1,95 @@
+{
+  "kind": "analytical_design_probes_not_model_training",
+  "reviewed_commit": "a3003d1fb53f5c1fecae21ff7a8cdfcf87069096",
+  "numpy_version": "2.3.5",
+  "passed": 6,
+  "checks": [
+    {
+      "name": "same_marginals_different_temporal_coupling",
+      "passed": true,
+      "marginal_scores_both": [
+        0.5,
+        0.5
+      ],
+      "joint_correct_wrong": [
+        0.49999999999999994,
+        0.9142135623730949
+      ],
+      "increment_correct_wrong": [
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "pair_feature_and_global_member_permutation",
+      "passed": true,
+      "pair_correct_wrong": [
+        0.49999999999999994,
+        1.331455754033283
+      ]
+    },
+    {
+      "name": "memberwise_mse_variance_penalty",
+      "passed": true,
+      "member_mse": 5.25,
+      "mean_mse": 0.8055555555555554,
+      "variance_penalty": 4.444444444444445
+    },
+    {
+      "name": "energy_does_not_reward_unbounded_spread",
+      "passed": true,
+      "amplitudes": [
+        0.0,
+        0.5,
+        1.0,
+        2.0,
+        4.0
+      ],
+      "expected_energy": [
+        1.0,
+        0.75,
+        0.5,
+        1.0,
+        2.0
+      ],
+      "note": "Exact population example, not an optimization or calibration guarantee."
+    },
+    {
+      "name": "raw_normalized_delta_actual_dt",
+      "passed": true,
+      "dt_hours": [
+        6.0,
+        6.0
+      ],
+      "tendency": [
+        [
+          2.0,
+          1.0
+        ],
+        [
+          3.0,
+          2.0
+        ]
+      ]
+    },
+    {
+      "name": "twelve_hour_selection_identity_and_rate",
+      "passed": true,
+      "source_step_hours": 6,
+      "output_interval_hours": 12,
+      "future_frames": 60,
+      "first_last_lead": [
+        12,
+        720
+      ],
+      "note": "Output selection only; checkpoint H and model interval stay unchanged."
+    }
+  ],
+  "not_verified": [
+    "PyTorch gradient",
+    "new production loss or sampler",
+    "ERA5 retraining",
+    "RTX4090 memory",
+    "forecast skill"
+  ]
+}

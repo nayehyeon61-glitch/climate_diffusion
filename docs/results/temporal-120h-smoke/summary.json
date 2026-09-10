@@ -1,0 +1,175 @@
+{
+  "experiment": "From-scratch synthetic A/B/C; no ERA5 training or GPU execution",
+  "shape": [
+    480,
+    4,
+    4,
+    8
+  ],
+  "horizon_hours": 120,
+  "native_step_hours": 6,
+  "future_leads": 20,
+  "baseline": "same A and RNG, corrected noise, new loss weights zero; NOT original commit baseline",
+  "new_training": "2-edge sub-blocks; full 20-edge validation; separate full-window B backward smoke",
+  "stage_b_frozen_manifold_exact": true,
+  "checkpoints": {
+    "a": {
+      "sha256": "8f42095f10f6bff7acd9615f9d9d461bcec7e92399a05adab494192847c2bd96",
+      "best_epoch": 10
+    },
+    "baseline-b": {
+      "sha256": "67d5b8c70b661afcf2f430044603dc900b744173a364a7b152c8ff8ba9fcd483",
+      "best_epoch": 6
+    },
+    "baseline-c": {
+      "sha256": "7f573eca17f8a24997a98c8c4308f6a4b49fa2600333ba53d3b0373b37fb4665",
+      "best_epoch": 1
+    },
+    "new-b": {
+      "sha256": "f8a731352028a55c7674ed645e8ab599677f13dfd5c72cbc0a4771fe841e8b79",
+      "best_epoch": 6
+    },
+    "new-c": {
+      "sha256": "59febda757359c0f8cb1a73a4617ad5f0f74cbbd19d6fb9c05d13e25a61c1e80",
+      "best_epoch": 1
+    },
+    "full-window-b": {
+      "sha256": "f0abe94eca734fd17a7098deae87983ebbfa90549424a356a9f66991892255f3",
+      "best_epoch": 1
+    }
+  },
+  "archive_sha256": "e0a66b5b0119b3125551dd9b3d87260c9d5d47964cb5521114f97315cb380f46",
+  "temporal_statistics": {
+    "format": "climate_diffusion.temporal_statistics.v1",
+    "train_span": [
+      0,
+      201
+    ],
+    "unique_pair_count": 200,
+    "step_hours": 6.0,
+    "names": [
+      "msl",
+      "t2m",
+      "u10",
+      "v10"
+    ],
+    "tendency_mean": [
+      0.007962992450792421,
+      -0.00013064455762217946,
+      8.50891648670984e-05,
+      9.362386356375635e-05
+    ],
+    "tendency_scale": [
+      18.294835944473924,
+      0.10397711295573106,
+      0.1613507835978165,
+      0.14172349345247598
+    ],
+    "tendency_floor": [
+      0.08762490630926138,
+      0.0004046012502246772,
+      0.0007635506831259923,
+      0.000599226249213305
+    ],
+    "variable_weights": {
+      "msl": 1.0,
+      "t2m": 1.0,
+      "u10": 1.0,
+      "v10": 1.0
+    },
+    "wind_speed_scale": 5.829947150223171,
+    "unit_policy": "validate declared units; missing attrs assume Pa/K/m/s by canonical variable name",
+    "calm_threshold_mps": 0.2914973575111585,
+    "sha256": "baf5b823ac3cda23d033e3ce32209947f943c9b9406e5f3cfdeae5e8527db1e2"
+  },
+  "validation": {
+    "baseline": {
+      "state": {
+        "mae": 0.9242889285087585,
+        "rmse": 1.0792150497436523,
+        "bias": 0.0028668721206486225,
+        "crps": 0.8591368943452835,
+        "ensemble_spread": 0.13949290104210377,
+        "persistence_rmse": 1.2260382175445557,
+        "climatology_rmse": 1.0637425184249878,
+        "energy": 0.9977086905398584,
+        "coverage_80": 0.07685546875,
+        "rms_spread": 0.17147096644488624,
+        "spread_skill_ratio": 0.1588848918346867
+      },
+      "temporal": {
+        "loss_trajectory": 1.5986418724060059,
+        "loss_delta": 2.0483164191246033,
+        "increment_spread": 0.08436561189591885,
+        "trajectory_edges": 20.0,
+        "state_mse_msl": 1.0963454842567444,
+        "state_mse_t2m": 0.9769645035266876,
+        "state_mse_u10": 0.9818431884050369,
+        "state_mse_v10": 1.4120949506759644,
+        "tendency_mse_msl": 2.193626046180725,
+        "tendency_mse_t2m": 1.7864575386047363,
+        "tendency_mse_u10": 2.2472793459892273,
+        "tendency_mse_v10": 1.9659022986888885,
+        "loss_wind_speed": 0.5235951840877533,
+        "loss_wind_direction": 1.4737367630004883,
+        "wind_direction_valid_fraction": 0.9973958432674408
+      }
+    },
+    "new": {
+      "state": {
+        "mae": 0.9242838621139526,
+        "rmse": 1.0792046785354614,
+        "bias": 0.0028804142493754625,
+        "crps": 0.8590512573719025,
+        "ensemble_spread": 0.1396765410900116,
+        "persistence_rmse": 1.2260382175445557,
+        "climatology_rmse": 1.0637425184249878,
+        "energy": 0.9976004363594582,
+        "coverage_80": 0.076953125,
+        "rms_spread": 0.1717003522919473,
+        "spread_skill_ratio": 0.15909896955316566
+      },
+      "temporal": {
+        "loss_trajectory": 1.5983174443244934,
+        "loss_delta": 2.0482476353645325,
+        "increment_spread": 0.08462738804519176,
+        "trajectory_edges": 20.0,
+        "state_mse_msl": 1.0963157713413239,
+        "state_mse_t2m": 0.9769522696733475,
+        "state_mse_u10": 0.98179492354393,
+        "state_mse_v10": 1.4120759069919586,
+        "tendency_mse_msl": 2.193475127220154,
+        "tendency_mse_t2m": 1.7864294946193695,
+        "tendency_mse_u10": 2.247202157974243,
+        "tendency_mse_v10": 1.9658833742141724,
+        "loss_wind_speed": 0.523496225476265,
+        "loss_wind_direction": 1.473307192325592,
+        "wind_direction_valid_fraction": 0.9973958432674408
+      }
+    }
+  },
+  "test_used": false,
+  "rendered_members": [
+    0,
+    1,
+    2
+  ],
+  "intervals_hours": [
+    6,
+    12
+  ],
+  "elapsed_seconds": 31.79460179700004,
+  "peak_process_rss_mib": 464.65625,
+  "environment": {
+    "python": "3.12.14",
+    "torch": "2.8.0+cpu",
+    "device": "cpu",
+    "threads": 1
+  },
+  "limits": [
+    "One toy seed; not meteorological data, calibration or specialization evidence",
+    "Tiny smoke budgets do not establish superiority or fix overfitting",
+    "No actual ERA5 archive, RunPod connection or GPU benchmark available",
+    "Full-horizon objective executed for one B epoch only, not converged 120h joint law"
+  ]
+}

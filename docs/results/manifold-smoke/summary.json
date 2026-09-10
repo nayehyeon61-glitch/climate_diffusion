@@ -1,0 +1,142 @@
+{
+  "experiment": "synthetic manifold A/B/C smoke; NOT ERA5 or RunPod",
+  "state_shape": [
+    480,
+    4,
+    4,
+    8
+  ],
+  "horizon_hours": 48,
+  "model_config": {
+    "state_dim": 128,
+    "grid": [
+      4,
+      4,
+      8
+    ],
+    "history_steps": 6,
+    "history_stride": 1,
+    "horizon_steps": 8,
+    "step_hours": 6,
+    "num_experts": 3,
+    "manifold_dim": 6,
+    "expert_latent_dim": 64,
+    "gate_hidden_dim": 64,
+    "hidden_dim": 64,
+    "context_dim": 32,
+    "time_embedding_dim": 16,
+    "gate_temperature": 0.7,
+    "responsibility_temperature": 0.5,
+    "locality_weight": 2.0,
+    "gate_correction_limit": 0.5,
+    "projection_ridge": 0.001
+  },
+  "best_epochs": {
+    "manifold": 46,
+    "specialize": 40,
+    "joint": 8
+  },
+  "stage_b_frozen_manifold_exactly_equal": true,
+  "test": {
+    "stage_b": {
+      "mae": 0.6494843363761902,
+      "rmse": 0.7928426265716553,
+      "bias": 0.0003450494259595871,
+      "crps": 0.49581167846918106,
+      "ensemble_spread": 0.6905077025294304,
+      "persistence_rmse": 0.8341327905654907,
+      "climatology_rmse": 1.0536350011825562,
+      "energy": 0.5963518965552632,
+      "coverage_80": 0.637451171875,
+      "rms_spread": 0.7330436051348739,
+      "spread_skill_ratio": 0.9245764298832425
+    },
+    "uniform": {
+      "mae": 0.6563692092895508,
+      "rmse": 0.7972914576530457,
+      "bias": -0.0014573426451534033,
+      "crps": 0.49305079877376556,
+      "ensemble_spread": 0.6207099556922913,
+      "persistence_rmse": 0.8341327905654907,
+      "climatology_rmse": 1.0536350011825562,
+      "energy": 0.5958055522263725,
+      "coverage_80": 0.5771484375,
+      "rms_spread": 0.6615933598973135,
+      "spread_skill_ratio": 0.8298011392782495
+    },
+    "local": {
+      "mae": 0.6399620175361633,
+      "rmse": 0.7819276452064514,
+      "bias": -0.0005566091276705265,
+      "crps": 0.4872651770710945,
+      "ensemble_spread": 0.6854006052017212,
+      "persistence_rmse": 0.8341327905654907,
+      "climatology_rmse": 1.0536350011825562,
+      "energy": 0.5873045328817252,
+      "coverage_80": 0.6451416015625,
+      "rms_spread": 0.7274876749208872,
+      "spread_skill_ratio": 0.9303772278428774
+    }
+  },
+  "teacher_forced_audit": {
+    "population": "one independently noised latent FM pair per temporally correlated test origin; tau=0.5; final lead",
+    "region_counts": [
+      13,
+      10,
+      9
+    ],
+    "expert_fm_by_region": [
+      [
+        0.8005326390266418,
+        1.7940512895584106,
+        1.5211446285247803
+      ],
+      [
+        1.2226011753082275,
+        1.0487691164016724,
+        1.6637506484985352
+      ],
+      [
+        1.6321024894714355,
+        1.3681095838546753,
+        0.9461502432823181
+      ]
+    ],
+    "local_expert_best_fraction": 0.6875,
+    "gate_best_expert_fraction": 0.6875
+  },
+  "generated_audit": {
+    "population": "midpoint evaluations of actual generated final-lead ODE paths",
+    "sample_count": 128,
+    "gate_mean": [
+      0.5995760560035706,
+      0.23293885588645935,
+      0.16748511791229248
+    ],
+    "gate_entropy_nats": 0.16848520934581757,
+    "candidate_cosine": 0.870967447757721,
+    "candidate_pair_mse": 0.09108148515224457,
+    "projection_removed_fraction": 0.5295084714889526,
+    "damped_metric_condition_mean": 749.939453125,
+    "chart_distance_over_radius_mean": 1.3833297491073608
+  },
+  "test_manifold_reconstruction_rmse": 0.43771135807037354,
+  "archive_sha256": "e0a66b5b0119b3125551dd9b3d87260c9d5d47964cb5521114f97315cb380f46",
+  "checkpoint_sha256": "d56ae7e05d81a03d85431ea21b94fffd61773d9741c650c94029c558d8578aeb",
+  "parameter_count": 143221,
+  "elapsed_seconds": 36.246234033999826,
+  "peak_process_rss_mib": 426.8359375,
+  "environment": {
+    "python": "3.12.13",
+    "torch": "2.14.0+cpu",
+    "numpy": "2.3.5",
+    "device": "cpu",
+    "threads": 1
+  },
+  "limits": [
+    "One seed, short toy horizon; partition does not prove meteorological specialization",
+    "Surface diagnostic matching, not primitive PDE or exact conservation",
+    "Decoder image may have singularities; damped lift is approximate",
+    "Leadwise conditional marginals, not a trained joint-time trajectory distribution"
+  ]
+}

@@ -27,6 +27,8 @@ def sample_fixed_step_history(dataset: xr.Dataset, step_hours: int) -> xr.Datase
     if "time" not in dataset.coords:
         raise ValueError("Fixed-step Flow input requires a time coordinate")
     times = pd.DatetimeIndex(pd.to_datetime(dataset.time.values))
+    if times.has_duplicates:
+        raise ValueError("Fixed-step Flow input contains duplicate timestamps")
     if len(times) < 2:
         return dataset
     available = {int(value.value) for value in times}

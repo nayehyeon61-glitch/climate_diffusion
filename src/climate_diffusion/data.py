@@ -274,6 +274,7 @@ def vectorize_dataset(
     schema: dict[str, Any],
     *,
     integrated_defaults: np.ndarray | None = None,
+    require_observed: bool = False,
 ) -> np.ndarray:
     """Map monthly fields to the exact state layout stored in a training schema."""
     dataset = _normalise_coordinates(dataset)
@@ -314,6 +315,8 @@ def vectorize_dataset(
             start, end = variable["slice"]
             if values.size != end - start:
                 raise ValueError(f"Variable {name!r} shape does not match training schema")
+            if require_observed and not np.isfinite(values).all():
+                raise ValueError(f"MoE requires fully observed input after grid mapping: {name}")
             state[start:end] = np.nan_to_num(values)
         for offset, feature_name in enumerate(schema["integrated_feature_names"]):
             source_name = feature_name.removeprefix("integrated:")

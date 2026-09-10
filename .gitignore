@@ -10,3 +10,6 @@ outputs/
 *.npz
 *.nc
 *.zarr/
+download/*
+!download/flow-matching/
+!download/flow-matching/**/*.pt
