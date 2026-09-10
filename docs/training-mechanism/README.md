@@ -1,5 +1,10 @@
 # State + Dynamics Matching 설계
 
+**후속 구현 완료:** [120h 실행 README](../../flow-matching_moe/RETRAIN_120H.md),
+[실제 계산 그래프](../../struct-picture/11-temporal-training-implemented.md),
+[CPU 합성 검증 결과](../results/temporal-120h-smoke/README.md)를 확인하세요.
+아래는 2026-09-09 당시의 근거·설계 기록이며, 당시의 미구현 설명은 역사적 상태입니다.
+
 검토일: 2026-09-09. 코드 기준: `a3003d1fb53f5c1fecae21ff7a8cdfcf87069096`,
 `feature/latent-dynamics-flow`. **이 문서는 설계이며 새 dynamics loss의 구현 완료 보고가 아닙니다.**
 실제 ERA5 재학습·RTX 4090 실행은 이번 작업에서 수행하지 않았습니다.

@@ -41,8 +41,11 @@ def evaluate_flow_checkpoint(
     device: str | None = None,
     max_cases: int | None = None,
     moe_mode: str | None = None,
+    split_name: str = "test",
 ) -> Path:
-    """Evaluate only test windows recorded in a checkpoint split manifest."""
+    """Evaluate an explicitly named held-out split (test by default)."""
+    if split_name not in {"test", "validation", "expert_validation"}:
+        raise ValueError("Evaluation split must be held out, not train/calibration")
     if min(ensemble_size, integration_steps) < 1:
         raise ValueError("ensemble_size and integration_steps must be positive")
     forecaster = LatentFlowForecaster(checkpoint_path, device=device)
@@ -53,10 +56,10 @@ def evaluate_flow_checkpoint(
 
     training = forecaster.training_metadata
     split = training.get("split", {})
-    test_indices = [int(value) for value in split.get("test", [])]
+    test_indices = [int(value) for value in split.get(split_name, [])]
     if not test_indices:
         raise ValueError(
-            "Checkpoint has no held-out test split; retrain with artifact format v2"
+            f"Checkpoint has no held-out {split_name} split; retrain with artifact format v2"
         )
     history_months = forecaster.history_span_steps
     horizon = forecaster.config.horizon_steps if forecaster.is_dynamics else 1
@@ -83,6 +86,10 @@ def evaluate_flow_checkpoint(
     lead_months = int(training.get("lead_months", 1))
     scale = forecaster.state_scale.detach().cpu().numpy()
     mean = forecaster.state_mean.detach().cpu().numpy()
+    temporal = None
+    if forecaster.is_manifold and ensemble_size >= 2 and "temporal_statistics" in training:
+        from .temporal_supervision import TemporalObjective
+        temporal = TemporalObjective(schema, mean, scale, training["temporal_statistics"])
 
     predictions, targets = [], []
     case_rows: list[dict[str, Any]] = []
@@ -127,6 +134,16 @@ def evaluate_flow_checkpoint(
             pairwise = np.linalg.norm(normalized_samples[:, None] - normalized_samples[None, :], axis=-1).mean()
             case_metrics["energy"] = float((accuracy - 0.5 * pairwise) / np.sqrt(states.shape[1]))
         if forecaster.is_manifold:
+            if temporal is not None:
+                import torch
+                origin = (states[target_index-1]-mean)/scale
+                paths = np.concatenate((np.broadcast_to(origin,(ensemble_size,1,len(origin))),normalized_samples),1)
+                observed = np.concatenate((origin[None],normalized_target),0)
+                with torch.no_grad():
+                    tm = temporal(torch.tensor(paths[None],dtype=torch.float32),
+                                  torch.tensor(observed[None],dtype=torch.float32),
+                                  torch.full((1,horizon),float(forecaster.forecast_step_hours)))
+                case_metrics["temporal"] = {k:float(v) for k,v in tm.items()}
             low, high = np.quantile(normalized_samples, [0.1, 0.9], axis=0)
             case_metrics["coverage_80"] = float(((normalized_target >= low) & (normalized_target <= high)).mean())
             case_metrics["mean_variance"] = float(normalized_samples.var(axis=0).mean())
@@ -173,7 +190,9 @@ def evaluate_flow_checkpoint(
         "checkpoint": str(Path(checkpoint_path)),
         "checkpoint_sha256": forecaster.checkpoint_sha256,
         "archive": str(Path(archive_path)),
-        "test_windows": test_indices,
+        "test_windows": test_indices if split_name == "test" else [],
+        "evaluation_windows": test_indices,
+        "evaluation_split": split_name,
         "ensemble_size": ensemble_size,
         "integration_steps": integration_steps,
         "max_cases": max_cases,
@@ -205,6 +224,10 @@ def evaluate_flow_checkpoint(
         overall["coverage_80"] = float(np.mean([row["coverage_80"] for row in case_rows]))
         overall["rms_spread"] = float(np.sqrt(np.mean([row["mean_variance"] for row in case_rows])))
         overall["spread_skill_ratio"] = overall["rms_spread"] / overall["rmse"] if overall["rmse"] > 0 else None
+        if temporal is not None:
+            result["temporal_overall"] = {k:float(np.mean([row["temporal"][k] for row in case_rows]))
+                                           for k in case_rows[0]["temporal"]}
+            result["temporal_estimator"] = "fair off-diagonal Energy, full physical horizon including observed origin"
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
@@ -223,6 +246,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device")
     parser.add_argument("--max-cases", type=int)
     parser.add_argument("--moe-mode", help="MoE: experts/meta/uniform; manifold: local/uniform/expert:<index>")
+    parser.add_argument("--split", dest="split_name", choices=("test","validation","expert_validation"), default="test")
     parser.add_argument("--output", default="outputs/monthly-flow-evaluation.json")
     args = parser.parse_args(argv)
     path = evaluate_flow_checkpoint(
@@ -235,6 +259,7 @@ def main(argv: list[str] | None = None) -> int:
         device=args.device,
         max_cases=args.max_cases,
         moe_mode=args.moe_mode,
+        split_name=args.split_name,
     )
     print(path)
     return 0

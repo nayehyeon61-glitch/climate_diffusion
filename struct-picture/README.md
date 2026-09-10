@@ -1,6 +1,13 @@
 # Climate Flow: Manifold MoE, Full-state MoE 및 Dynamics 구조
 
-## 학습 메커니즘 개선 설계 (2026-09-09, 아직 새 loss 미구현)
+## 구현된 dynamics loss / 120h trajectory (2026-09-10)
+
+- [11-temporal-training-implemented.md](11-temporal-training-implemented.md): 새 delta / joint trajectory / wind loss, A/B/C gradient
+- [12-member-trajectory-output.md](12-member-trajectory-output.md): 동일 noise, 정확한 6h/12h prefix, 모든 member 영상
+- [전면 재학습 실행 순서](../flow-matching_moe/RETRAIN_120H.md)
+- [실제 합성 학습·영상 결과와 미검증 범위](../docs/results/temporal-120h-smoke/README.md)
+
+## 학습 메커니즘 개선의 원래 설계 (2026-09-09)
 
 - [09-dynamics-supervision-design.md](09-dynamics-supervision-design.md): 동일 member paired endpoints, 확률적 dynamics loss와 gradient
 - [10-dynamics-data-and-stages.md](10-dynamics-data-and-stages.md): DataLoader shape, 두 시간축, 실험 순서와 후속 12h 출력

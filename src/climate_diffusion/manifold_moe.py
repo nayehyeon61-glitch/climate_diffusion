@@ -273,6 +273,8 @@ class ManifoldMoE(nn.Module):
 
     def manifold_loss(self, state, next_state, *, physics_weight=0.1, invariant_weight=0.05,
                       metric_weight=0.1, dynamics_weight=0.1):
+        if len(state) < 2 and metric_weight > 0:
+            raise ValueError("Manifold metric requires at least two states; do not silently train with zero metric")
         z = self.manifold.encode(state)
         reconstruction = self.manifold.decode(z)
         metrics = self.physics.reconstruction_losses(reconstruction, state)
@@ -331,6 +333,41 @@ class ManifoldMoE(nn.Module):
             metrics[f"expert_fm_{k}"] = errors[:, k].mean()
         return metrics
 
+    def sample_trajectory(self, context, lead_steps, *, ensemble_size, integration_steps,
+                          generator=None, initial=None, origin=None, mode=None):
+        """Differentiable common sampler for train/inference, [B,M,P,D].
+
+        Integer physical steps include observed origin 0. The checkpoint horizon,
+        not requested prefix/block length, defines lead normalization.
+        """
+        b = len(context)
+        if (lead_steps.ndim != 2 or lead_steps.shape[0] != b or lead_steps.shape[1] < 1
+                or lead_steps.dtype not in (torch.int32, torch.int64)
+                or bool((lead_steps < 0).any()) or bool((lead_steps > self.config.horizon_steps).any())
+                or ensemble_size < 1 or integration_steps < 1):
+            raise ValueError("Invalid integer physical lead steps or ensemble/ODE size")
+        if bool((lead_steps == 0).any()) and (origin is None or origin.shape != (b,self.config.state_dim)):
+            raise ValueError("Observed origin required for physical step zero")
+        if initial is None:
+            initial = torch.randn(b, ensemble_size, self.config.manifold_dim, device=context.device,
+                                  dtype=context.dtype, generator=generator)
+        if initial.shape != (b, ensemble_size, self.config.manifold_dim):
+            raise ValueError("initial must be [batch,member,manifold_dim]")
+        common = context.repeat_interleave(ensemble_size, 0)
+        noise = initial.reshape(b*ensemble_size, -1)
+        outputs = []
+        for steps in lead_steps.unbind(1):
+            if bool((steps == 0).all()):
+                value = origin[:, None].expand(-1, ensemble_size, -1)
+            else:
+                lead = steps.clamp_min(1).to(context).repeat_interleave(ensemble_size) / self.config.horizon_steps
+                q = self.integrate(noise, common, lead, integration_steps=integration_steps, mode=mode)
+                value = self.decode(q).reshape(b, ensemble_size, -1)
+                if bool((steps == 0).any()):
+                    value = torch.where((steps == 0)[:,None,None], origin[:,None], value)
+            outputs.append(value)
+        return torch.stack(outputs, 2)
+
     @torch.no_grad()
     def forecast(self, history, origin=None, *, ensemble_size=1, integration_steps=32,
                  lead_indices=None, generator=None, mode=None):
@@ -341,12 +378,6 @@ class ManifoldMoE(nn.Module):
         leads = list(range(self.config.horizon_steps)) if lead_indices is None else list(lead_indices)
         if not leads or any(not isinstance(k, int) or not 0 <= k < self.config.horizon_steps for k in leads):
             raise ValueError("lead_indices must be within the trained horizon")
-        context = self.encode_history(history).repeat_interleave(ensemble_size, 0)
-        initial = torch.randn(len(context), self.config.manifold_dim, device=history.device,
-                              dtype=history.dtype, generator=generator)
-        outputs = []
-        for index in leads:
-            lead = initial.new_full((len(initial),), (index + 1) / self.config.horizon_steps)
-            q = self.integrate(initial, context, lead, integration_steps=integration_steps, mode=mode)
-            outputs.append(self.decode(q).reshape(len(history), ensemble_size, -1))
-        return torch.stack(outputs, dim=2)
+        steps = (torch.tensor(leads, device=history.device) + 1)[None].expand(len(history), -1)
+        return self.sample_trajectory(self.encode_history(history), steps, ensemble_size=ensemble_size,
+                                      integration_steps=integration_steps, generator=generator, mode=mode)

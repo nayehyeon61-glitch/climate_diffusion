@@ -77,9 +77,12 @@ diagnose-climate-time \
 원자료가 없는 CPU 환경의 moving-field 계약 검증은
 `python scripts/smoke_time_alignment.py`로 재현합니다. 재생 `fps`는 보기 속도일 뿐
 모델 시간 보정값이 아닙니다. 생성 ODE의 `dq/dtau`, 물리 시각의 `dX/dt`, 그리고
-u10/v10 풍속(m/s)은 서로 다른 양입니다. 현재 MoE는 같은 member noise를 lead 사이에
-재사용하지만 leadwise conditional marginal을 학습하므로 joint physical trajectory law를
-학습했다고 해석하지 않습니다. 흐름은 [Mermaid](struct-picture/08-time-alignment.md)에 있습니다.
+u10/v10 풍속(m/s)은 서로 다른 양입니다. noise 공유만으로 joint physical trajectory law를
+학습했다고 해석하지 않습니다. 새 [120h 학습 profile](flow-matching_moe/RETRAIN_120H.md)은
+동일 member endpoint의 변화량 MSE와 joint endpoint/increment Energy를 명시적으로 추가합니다.
+기존 checkpoint에는 재학습이 필요합니다. [학습 Mermaid](struct-picture/11-temporal-training-implemented.md),
+[member 출력](struct-picture/12-member-trajectory-output.md),
+[실제 합성 검증 결과](docs/results/temporal-120h-smoke/README.md)를 확인하세요.
 
 ## 보존된 경로: Full-state Flow Matching MoE
 

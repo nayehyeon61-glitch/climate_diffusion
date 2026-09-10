@@ -1,6 +1,7 @@
 # DataLoader·두 시간축·실험 순서
 
-2026-09-09 설계, 아직 제안된 dynamics loader/loss 및 12h 출력 CLI는 구현하지 않았습니다.
+2026-09-09 당시 설계입니다. 후속 dynamics loader/loss 및 6h/12h 출력 구현은
+[11번 학습](11-temporal-training-implemented.md), [12번 출력](12-member-trajectory-output.md)에 있습니다.
 [전체 설계](../docs/training-mechanism/README.md).
 
 ## 데이터 shape와 정답 누수 방지

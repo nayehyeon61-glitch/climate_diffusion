@@ -222,6 +222,8 @@ def main(argv: list[str] | None = None) -> int:
         valid_times=origin_time + lead_hours.astype("timedelta64[h]"),
         checkpoint=str(forecaster.checkpoint_path),
         forecast_step_hours=np.asarray(forecaster.forecast_step_hours, dtype=np.int64),
+        schema_json=json.dumps(schema),
+        temporal_statistics_json=json.dumps(forecaster.training_metadata.get("temporal_statistics")),
         time_contract=np.asarray("valid_time = origin_time + lead_hours; exact UTC snapshots"),
         sampling_contract=np.asarray(forecaster.training_metadata.get(
             "sampling_contract", "unspecified")),

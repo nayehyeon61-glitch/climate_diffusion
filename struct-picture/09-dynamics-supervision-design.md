@@ -1,6 +1,7 @@
 # 제안: 같은 모델, paired physical-dynamics supervision
 
-상태: **설계 / 새 loss 미구현**, 기준 `a3003d1`, 2026-09-09.
+당시 상태: **설계 / 새 loss 미구현**, 기준 `a3003d1`, 2026-09-09.
+후속 실제 구현은 [11-temporal-training-implemented.md](11-temporal-training-implemented.md)를 참조하세요.
 [수식·판단 근거](../docs/training-mechanism/README.md), [구현·검증 순서](../docs/training-mechanism/RUNBOOK.md).
 실선은 forward, 점선은 감독/gradient입니다. Future 정답은 history/router 입력이 아닙니다.
 

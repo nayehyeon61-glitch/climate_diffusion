@@ -1,5 +1,9 @@
 # 최종 구조: Physics-informed Manifold MoE Ensemble
 
+**2026-09-10:** 모델 구조를 유지한 dynamics loss / 120h 전면 재학습 / 각 member 영상은
+[RETRAIN_120H.md](RETRAIN_120H.md)를 사용합니다. `scripts/smoke_temporal_moe.py`가 새 loss까지
+활성화한 합성 A/B/C 재현 진입점입니다. 아래는 기반 manifold architecture 설명입니다.
+
 진입점은 **`train-climate-manifold-moe`**입니다. 기존 `train-climate-moe`/`smoke_moe.py`는
 이전 AE64 + Meta160 모델을 실행합니다. 최종 구조 재현에는 **`smoke_manifold_moe.py`**를
 사용하세요. 이전 코드·checkpoint·실험은 보존하며 자동 변환하지 않습니다.

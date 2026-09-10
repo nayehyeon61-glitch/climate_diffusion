@@ -1,5 +1,10 @@
 # 처음부터 실행하는 Manifold MoE 학습 순서
 
+**2026-09-10 갱신:** 새 dynamics loss + 120시간 전면 재학습은
+[RETRAIN_120H.md](RETRAIN_120H.md)를 순서대로 실행하세요. 동일 member noise, loader의 delta/tendency,
+joint trajectory loss, 변수별 wind 보조항, 모든 member 출력이 구현됐습니다.
+아래는 기존 H=120(720시간/30일), 새 loss weight=0 profile을 보존한 문서입니다.
+
 대상은 `feature/latent-dynamics-flow`의 **Flow Matching + Manifold MoE + Ensemble**입니다.
 2026-09-09의 시간 정렬/영상 기능(`70ee926`)까지 코드와 CLI를 확인해 작성했습니다.
 현재 네트워크 구조를 유지하며 아래 순서대로 진행합니다.
@@ -19,8 +24,8 @@
 **현재 완료 범위:** 정확한 valid-time 정렬, 시간 변화율 진단/영상, 여러 lead의 FM pair를
 연속 시점으로 뽑고 source noise를 공유하는 처리가 있습니다. 아래 B/C는 이를 사용하도록
 `--sampled-leads 2`를 명시합니다. 기본값1에서는 연속 lead pair가 생기지 않습니다.
-**아직 없는 기능:** `Δstate/Δtime`을 직접 맞추는 별도 trajectory/tendency loss와 loader의
-독립 dynamics label 항목. 현재 sampler의 보정을 이런 loss의 구현으로 해석하지 마세요.
+**이 기존 profile에서 활성화하지 않는 기능:** 새 `loss_delta`/`loss_trajectory`와 dynamics labels는
+구현됐지만 아래 명령의 기본 새 loss weight는0입니다. 새 profile에서 명시적으로 활성화하세요.
 기존 checkpoint는 코드 갱신만으로 재학습되지 않습니다.
 
 2026-09-09 추가: [State + Dynamics Matching 설계](../docs/training-mechanism/README.md)에

@@ -43,6 +43,9 @@ def _as_utc_ns(value) -> np.datetime64:
 
 
 def _validate_leads(lead_hours: np.ndarray, horizon: int) -> np.ndarray:
+    raw = np.asarray(lead_hours)
+    if not np.isfinite(raw).all() or not np.all(raw == raw.astype(np.int64)):
+        raise ValueError("lead_hours must contain finite integer hours; no truncation")
     leads = np.asarray(lead_hours, dtype=np.int64)
     if leads.shape != (horizon,) or np.any(leads <= 0):
         raise ValueError("lead_hours must contain one positive value per forecast step")
@@ -72,10 +75,19 @@ def load_saved_forecast(path: str | Path) -> tuple[np.ndarray, np.datetime64, np
     return members, origin, leads
 
 
-def align_forecast(forecast_path: str | Path, archive_path: str | Path) -> AlignedForecast:
+def align_forecast(forecast_path: str | Path, archive_path: str | Path, *, selected_leads=None) -> AlignedForecast:
     """Join forecast and truth by exact UTC valid time; no nearest/lag matching."""
     members, origin, leads = load_saved_forecast(forecast_path)
+    if selected_leads is not None:
+        wanted = _validate_leads(np.asarray(selected_leads), len(selected_leads))
+        if not np.all(np.isin(wanted, leads)):
+            raise ValueError("Forecast lacks exact requested physical leads")
+        indices = np.searchsorted(leads, wanted)
+        members, leads = members[:, indices], leads[indices]
     states, times, schema = load_moe_archive(archive_path)
+    with np.load(forecast_path, allow_pickle=False) as source:
+        if "schema_json" in source and json.loads(str(source["schema_json"].item())) != schema:
+            raise ValueError("Forecast variable/grid schema differs from reference archive")
     valid = origin + leads.astype("timedelta64[h]")
     positions = {value: index for index, value in enumerate(times.astype("datetime64[ns]"))}
     if len(positions) != len(times):
@@ -96,6 +108,9 @@ def forecast_from_checkpoint(checkpoint: str | Path, archive_path: str | Path,
                              integration_steps=8, seed=0, device=None, moe_mode=None,
                              forecast_steps=None) -> Path:
     """Forecast at a requested archive origin while retaining future truth for audit."""
+    output = Path(output_path)
+    if output.exists():
+        raise FileExistsError("Choose a new forecast path; preserve the saved member identities")
     forecaster = LatentFlowForecaster(checkpoint, device=device)
     loader = load_moe_archive if forecaster.is_moe else load_monthly_archive
     states, times, schema = loader(archive_path)
@@ -120,6 +135,8 @@ def forecast_from_checkpoint(checkpoint: str | Path, archive_path: str | Path,
                         last_history_time=origin, lead_hours=leads,
                         valid_times=origin + leads.astype("timedelta64[h]"),
                         forecast_step_hours=np.asarray(forecaster.forecast_step_hours),
+                        schema_json=json.dumps(schema),
+                        temporal_statistics_json=json.dumps(forecaster.training_metadata.get("temporal_statistics")),
                         sampling_contract=np.asarray(forecaster.training_metadata.get(
                             "sampling_contract", "unspecified")))
     return output
@@ -302,6 +319,7 @@ def main(argv=None):
     parser.add_argument("--archive", required=True, help="Fixed-step archive containing exact future truth")
     parser.add_argument("--origin-time", help="Required with --checkpoint")
     parser.add_argument("--forecast-output", default="outputs/time-alignment/forecast.npz")
+    parser.add_argument("--forecast-only", action="store_true", help="Save native ensemble once, skip legacy mean renderer")
     parser.add_argument("--output", default="outputs/time-alignment/comparison.mp4")
     parser.add_argument("--report", default="outputs/time-alignment/diagnostics.json")
     parser.add_argument("--variable", default="t2m")
@@ -326,6 +344,9 @@ def main(argv=None):
                                             forecast_steps=args.forecast_steps)
     else:
         forecast = Path(args.forecast)
+    if args.forecast_only:
+        print(f"forecast={forecast}")
+        return 0
     aligned = align_forecast(forecast, args.archive)
     report = temporal_diagnostics(aligned)
     report_path = Path(args.report)

@@ -16,7 +16,9 @@ from .model import sinusoidal_time_embedding
 
 @torch.no_grad()
 def diagnose_manifold(checkpoint_path, archive_path, output_path, *, max_cases=32, members=4,
-                       integration_steps=4, seed=83, device="cpu"):
+                       integration_steps=4, seed=83, device="cpu", split_name="test"):
+    if split_name not in {"test", "validation", "expert_validation"}:
+        raise ValueError("Diagnostics must name a held-out evaluation split")
     if min(max_cases, members, integration_steps) < 1:
         raise ValueError("Diagnostic counts must be positive")
     f = LatentFlowForecaster(checkpoint_path, device=device)
@@ -32,7 +34,7 @@ def diagnose_manifold(checkpoint_path, archive_path, output_path, *, max_cases=3
     def choose(indices, limit):
         return [indices[k] for k in np.linspace(0,len(indices)-1,min(limit,len(indices)),dtype=int)]
     train_indices = choose(split["train"], 256)
-    test_indices = choose(split["test"], max_cases)
+    test_indices = choose(split[split_name], max_cases)
     def inputs(indices):
         history = np.stack([f.select_history(states[i:i+config.history_span_steps]) for i in indices])
         history = f._normalise(history)
@@ -58,7 +60,8 @@ def diagnose_manifold(checkpoint_path, archive_path, output_path, *, max_cases=3
     raw_features, invariants = m.physics.raw_features(origin)
     physical_signals = torch.cat((invariants,raw_features[:,1].square().mean((-2,-1)).sqrt()[:,None]),1)
     result = {"format":"climate_diffusion.manifold_diagnostics.v1", "stage":m.stage,
-              "checkpoint_sha256":f.checkpoint_sha256,"test_windows":test_indices,
+              "checkpoint_sha256":f.checkpoint_sha256,"test_windows":test_indices if split_name=="test" else [],
+              "evaluation_split":split_name,"evaluation_windows":test_indices,
               "pca_fit":"expert train origins only; gate queries at tau=1 and final physical lead",
               "pca_explained_variance_ratio":(singular[:2]**2/(singular**2).sum()).tolist(),
               "train_pca":pca(train_q),"test_pca":pca(q),"centers_pca":pca(m.gate.centers),
@@ -86,7 +89,7 @@ def diagnose_manifold(checkpoint_path, archive_path, output_path, *, max_cases=3
             counts.append(int(mask.sum()))
             regional_error.append(error[mask].mean(0).cpu().tolist() if bool(mask.any()) else [None]*config.num_experts)
         result["teacher_forced_audit"] = {
-            "population":"one independently noised latent FM pair per temporally correlated test origin; tau=0.5; final lead",
+            "population":f"one independently noised latent FM pair per temporally correlated {split_name} origin; tau=0.5; final lead",
             "region_counts":counts,"expert_fm_by_region":regional_error,
             "local_expert_best_fraction":float((regions==error.argmin(-1)).float().mean()),
             "gate_best_expert_fraction":float((field["router"].argmax(-1)==error.argmin(-1)).float().mean())}
@@ -128,6 +131,12 @@ def diagnose_manifold(checkpoint_path, archive_path, output_path, *, max_cases=3
             "damped_metric_condition_mean":float(torch.stack(conditions).mean()),
             "chart_distance_over_radius_mean":float(torch.stack(distances).mean()),
             "intrinsic_path_pca":path_pca}
+    for key in ("pca", "gate", "physical_signals"):
+        result["evaluation_"+key]=result["test_"+key]
+        if split_name!="test": del result["test_"+key]
+    for key in ("anchor_rmse", "manifold_reconstruction_rmse"):
+        result[key+"_evaluation"]=result[key+"_test"]
+        if split_name!="test": del result[key+"_test"]
     output = Path(output_path)
     output.parent.mkdir(parents=True,exist_ok=True)
     output.write_text(json.dumps(result,indent=2,allow_nan=False)+"\n")
@@ -144,6 +153,7 @@ def main(argv=None):
     parser.add_argument("--integration-steps",type=int,default=4)
     parser.add_argument("--seed",type=int,default=83)
     parser.add_argument("--device",default="cpu")
+    parser.add_argument("--split",dest="split_name",choices=("test","validation","expert_validation"),default="test")
     args = vars(parser.parse_args(argv))
     print(diagnose_manifold(args.pop("checkpoint"),args.pop("archive"),args.pop("output"),**args))
     return 0

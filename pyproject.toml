@@ -30,6 +30,10 @@ train-climate-manifold-moe = "climate_diffusion.train_manifold_moe:main"
 forecast-climate-flow = "climate_diffusion.inference:main"
 evaluate-climate-flow = "climate_diffusion.evaluation:main"
 diagnose-climate-time = "climate_diffusion.time_alignment:main"
+render-climate-trajectories = "climate_diffusion.trajectory_output:main"
+
+[tool.setuptools.package-data]
+climate_diffusion = ["assets/*.geojson", "assets/*.md"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,0 +1,34 @@
+{
+  "tests_passed": 54,
+  "new_mermaid_diagrams_parsed": 3,
+  "preflight_checkpoint_statistics_equal": true,
+  "native_forecast_cli_bit_equal_with_same_thread_count": true,
+  "same_member_prefix_6h_12h_exact": true,
+  "exact_valid_times": true,
+  "member_mp4": [
+    {
+      "path": "members-6h/member-000.mp4",
+      "width": 1100,
+      "height": 460,
+      "pix_fmt": "yuv420p",
+      "nb_frames": "20"
+    },
+    {
+      "path": "members-6h/member-001.mp4",
+      "width": 1100,
+      "height": 460,
+      "pix_fmt": "yuv420p",
+      "nb_frames": "20"
+    },
+    {
+      "path": "members-6h/member-002.mp4",
+      "width": 1100,
+      "height": 460,
+      "pix_fmt": "yuv420p",
+      "nb_frames": "20"
+    }
+  ],
+  "gif_members": 3,
+  "gif_frames_each": 10,
+  "scope": "synthetic CPU only; no ERA5 retraining"
+}

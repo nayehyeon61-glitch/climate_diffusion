@@ -1,5 +1,9 @@
 # Full-state Flow Matching MoE
 
+**새 dynamics loss + 120시간 trajectory + member별 영상:**
+[RETRAIN_120H.md](RETRAIN_120H.md)의 처음부터 재학습 순서를 사용하세요.
+실제 구현·합성 A/B/C 실행·비교 로그는 [검증 보고](../docs/results/temporal-120h-smoke/README.md)에 있습니다.
+
 **최종 manifold 구조는 [MANIFOLD_README.md](MANIFOLD_README.md)에 있습니다.**
 처음 설치하고 실제 데이터를 학습하는 순서는 **[단계별 학습 README](TRAINING_README.md)**를
 따라가세요. A → B → C checkpoint 연결과 시간 비교 영상·최종 평가까지 포함합니다.
