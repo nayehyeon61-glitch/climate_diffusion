@@ -28,6 +28,7 @@ class AlignedForecast:
     lead_hours: np.ndarray
     schema: dict
     origin_state: np.ndarray
+    sampling_contract: str = "unspecified; inspect source checkpoint before interpreting temporal coupling"
 
 
 def _as_utc_ns(value) -> np.datetime64:
@@ -86,6 +87,7 @@ def align_forecast(forecast_path: str | Path, archive_path: str | Path, *, selec
         members, leads = members[:, indices], leads[indices]
     states, times, schema = load_moe_archive(archive_path)
     with np.load(forecast_path, allow_pickle=False) as source:
+        sampling_contract = str(source['sampling_contract'].item()) if 'sampling_contract' in source else 'unspecified'
         if "schema_json" in source and json.loads(str(source["schema_json"].item())) != schema:
             raise ValueError("Forecast variable/grid schema differs from reference archive")
     valid = origin + leads.astype("timedelta64[h]")
@@ -100,7 +102,7 @@ def align_forecast(forecast_path: str | Path, archive_path: str | Path, *, selec
     truth = states[[positions[value] for value in valid]]
     if members.shape[-1] != schema["state_dim"]:
         raise ValueError("forecast state dimension differs from reference schema")
-    return AlignedForecast(members, truth, origin, valid, leads, schema, states[positions[origin]])
+    return AlignedForecast(members, truth, origin, valid, leads, schema, states[positions[origin]],sampling_contract)
 
 
 def forecast_from_checkpoint(checkpoint: str | Path, archive_path: str | Path,
@@ -218,7 +220,8 @@ def temporal_diagnostics(aligned: AlignedForecast) -> dict:
             "time_quantities": {"flow_velocity": "dq/dtau (not measured here)",
                                 "state_tendency": "delta state / physical hour",
                                 "wind": "u10/v10 components in m/s when source units are m/s"},
-            "sampling_contract": "leadwise conditional marginals; shared member noise is not a joint trajectory law",
+            "sampling_contract": aligned.sampling_contract,
+            "mixed_unit_warning": "Legacy pooled raw-unit RMS mixes Pa/K/m/s; use per-variable member JSON for scientific interpretation",
             "median_tendency_amplitude_ratio_prediction_over_truth": float(np.median(ratio)),
             "member_tendency_rms_per_hour": np.sqrt(np.mean(member_tendency ** 2, axis=2)).tolist(),
             "lag_diagnostic": _lag_diagnostic(pred_change, truth_change),

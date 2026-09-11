@@ -24,6 +24,7 @@ class SurfacePhysics(nn.Module):
         super().__init__()
         self.grid = field_grid(schema)
         names = [v["name"] for v in schema["variables"]]
+        self.variable_names = names
         required = ("msl", "t2m", "u10", "v10")
         if not set(required).issubset(names):
             raise ValueError("Surface manifold physics requires msl, t2m, u10, v10 (Pa, K, m/s)")

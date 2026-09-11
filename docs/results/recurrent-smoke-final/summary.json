@@ -1,0 +1,163 @@
+{
+  "kind": "synthetic from-scratch A/B/C, not ERA5",
+  "same_A_weights": true,
+  "B_frozen_exact": true,
+  "all_training_trajectory_edges": 20,
+  "horizon_hours": 120,
+  "member_count": 3,
+  "integration_steps_tau": 2,
+  "physical_step_hours": 6,
+  "test_used": false,
+  "seed": 7,
+  "evaluation_seed": 83,
+  "parameter_count": 73119,
+  "checkpoints": {
+    "baseline": {
+      "a": {
+        "sha256": "42eac3ec50e8a975b8b9d7560d6aba0b283db1b9b0436b618690926e9bdd2222",
+        "best_epoch": 12
+      },
+      "b": {
+        "sha256": "436b95039e4c38b20182c055bfd1a3d0ce00cb0c85c9e6b3ccf876a831d2f7fa",
+        "best_epoch": 3
+      },
+      "c": {
+        "sha256": "21d977368626b6eeaf161a8e620547eee207486f92bc11b6f2d06a7677d8ea64",
+        "best_epoch": 3
+      }
+    },
+    "recurrent": {
+      "a": {
+        "sha256": "50748903bd4bdba1d9b7aa8e75db12379ebdc61898aa7218447b8f9b99f539d6",
+        "best_epoch": 12
+      },
+      "b": {
+        "sha256": "ceeeabc8aa105d0360f20a8439c2adc1e020d172bc0a91dc3c5ccf394ea6deda",
+        "best_epoch": 1
+      },
+      "c": {
+        "sha256": "f361c5e046ff0ef0dc1d5ef38b4ea4eada1371ab5b89ee2b0879bc34e5b6f1f4",
+        "best_epoch": 1
+      }
+    }
+  },
+  "archive_sha256": "e0a66b5b0119b3125551dd9b3d87260c9d5d47964cb5521114f97315cb380f46",
+  "comparison_contract": "Both baseline/new have full-window probabilistic+mean/member-delta/wind losses; only forecast/FM target semantics differ. Drift-only uses recurrent C weights, not independently tuned.",
+  "validation": {
+    "baseline": {
+      "state": {
+        "mae": 0.9433979988098145,
+        "rmse": 1.0979409217834473,
+        "bias": 0.027579914778470993,
+        "crps": 0.9171477556228638,
+        "ensemble_spread": 0.056183574721217155,
+        "persistence_rmse": 0.6903391480445862,
+        "climatology_rmse": 1.046998143196106,
+        "energy": 1.0640211722143222,
+        "coverage_80": 0.024218749999999997,
+        "rms_spread": 0.0762103431413058,
+        "spread_skill_ratio": 0.06941206182342949
+      },
+      "temporal": {
+        "loss_trajectory": 1.7137477397918701,
+        "loss_delta": 2.0847870111465454,
+        "loss_delta_member": 2.095209240913391,
+        "delta_member_variance_penalty": 0.010422231629490852,
+        "increment_spread": 0.05381295830011368,
+        "trajectory_edges": 20.0,
+        "state_mse_msl": 1.1157822608947754,
+        "state_mse_t2m": 0.9602779448032379,
+        "state_mse_u10": 1.1321632266044617,
+        "state_mse_v10": 1.4348730444908142,
+        "tendency_mse_msl": 2.1713738441467285,
+        "tendency_mse_t2m": 1.6786805987358093,
+        "tendency_mse_u10": 2.3633875846862793,
+        "tendency_mse_v10": 2.1257062554359436,
+        "loss_wind_speed": 0.5407620668411255,
+        "loss_wind_direction": 1.9161702394485474,
+        "wind_direction_valid_fraction": 0.9970238208770752
+      }
+    },
+    "recurrent": {
+      "state": {
+        "mae": 0.5463700890541077,
+        "rmse": 0.7137771248817444,
+        "bias": 0.004578739404678345,
+        "crps": 0.49865178763866425,
+        "ensemble_spread": 0.12310970574617386,
+        "persistence_rmse": 0.6903391480445862,
+        "climatology_rmse": 1.046998143196106,
+        "energy": 0.5897006655132666,
+        "coverage_80": 0.11796875,
+        "rms_spread": 0.17873446773440274,
+        "spread_skill_ratio": 0.2504065505938072
+      },
+      "temporal": {
+        "loss_trajectory": 1.0890435576438904,
+        "loss_delta": 0.9992838799953461,
+        "loss_delta_member": 1.0049317479133606,
+        "delta_member_variance_penalty": 0.005647914716973901,
+        "increment_spread": 0.05428614467382431,
+        "trajectory_edges": 20.0,
+        "state_mse_msl": 0.4669196605682373,
+        "state_mse_t2m": 0.4450696110725403,
+        "state_mse_u10": 0.4406581372022629,
+        "state_mse_v10": 0.6128877699375153,
+        "tendency_mse_msl": 0.973560243844986,
+        "tendency_mse_t2m": 0.962215393781662,
+        "tendency_mse_u10": 1.0020149052143097,
+        "tendency_mse_v10": 1.0593447983264923,
+        "loss_wind_speed": 0.3002261519432068,
+        "loss_wind_direction": 0.6025614738464355,
+        "wind_direction_valid_fraction": 0.9970238208770752
+      }
+    },
+    "drift_only": {
+      "state": {
+        "mae": 0.5246965289115906,
+        "rmse": 0.6889416575431824,
+        "bias": -0.00856227707117796,
+        "crps": 0.5246965289115906,
+        "ensemble_spread": 1.0100666525403312e-08,
+        "persistence_rmse": 0.6903391480445862,
+        "climatology_rmse": 1.046998143196106,
+        "energy": 0.6211139339670426,
+        "coverage_80": 0.0,
+        "rms_spread": 3.068932078033364e-08,
+        "spread_skill_ratio": 4.4545601858035504e-08
+      },
+      "temporal": {
+        "loss_trajectory": 1.2015894055366516,
+        "loss_delta": 0.9910333454608917,
+        "loss_delta_member": 0.9910333156585693,
+        "delta_member_variance_penalty": 0.0,
+        "increment_spread": 0.0,
+        "trajectory_edges": 20.0,
+        "state_mse_msl": 0.4262901246547699,
+        "state_mse_t2m": 0.41520245373249054,
+        "state_mse_u10": 0.4075750857591629,
+        "state_mse_v10": 0.5626161992549896,
+        "tendency_mse_msl": 0.9614708721637726,
+        "tendency_mse_t2m": 0.96266108751297,
+        "tendency_mse_u10": 0.979492574930191,
+        "tendency_mse_v10": 1.0605088472366333,
+        "loss_wind_speed": 0.3688925802707672,
+        "loss_wind_direction": 0.6202757954597473,
+        "wind_direction_valid_fraction": 0.9970238208770752
+      }
+    }
+  },
+  "elapsed_seconds": 136.642992521,
+  "peak_process_rss_mib": 663.17578125,
+  "environment": {
+    "python": "3.12.14",
+    "torch": "2.14.0+cpu",
+    "device": "cpu"
+  },
+  "limits": [
+    "One synthetic seed, two held-out windows, tiny grid/budget; not calibrated ERA5 skill",
+    "Persistent residual noise alone does not guarantee correct temporal law",
+    "Recurrent Euler errors may accumulate; no stability guarantee",
+    "Actual ERA5 archive/checkpoints and RunPod unavailable; not retrained here"
+  ]
+}

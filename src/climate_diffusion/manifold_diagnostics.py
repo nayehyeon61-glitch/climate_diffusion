@@ -28,6 +28,10 @@ def diagnose_manifold(checkpoint_path, archive_path, output_path, *, max_cases=3
     f.validate_archive(schema, times)
     if _sha256(Path(archive_path)) != f.training_metadata["archive_sha256"]:
         raise ValueError("Diagnostics require the identical training archive")
+    if f.config.forecast_dynamics == "recurrent_residual":
+        from .recurrent_diagnostics import diagnose_recurrent
+        return diagnose_recurrent(f,states,times,output_path,max_cases=max_cases,members=members,
+            integration_steps=integration_steps,seed=seed,split_name=split_name)
     m = f.model
     split = f.training_metadata["split"]
     config = m.config

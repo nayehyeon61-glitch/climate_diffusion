@@ -1,5 +1,7 @@
 # 120시간 State + Dynamics: 처음부터 재학습하기
 
+**신규 recurrent drift+residual FM 학습:** [RECURRENT_TRAINING_MANUAL.md](RECURRENT_TRAINING_MANUAL.md). 아래는 기존 lead-conditioned profile입니다.
+
 **실행 순서와 단계별 점검은 [TRAINING_MANUAL.md](TRAINING_MANUAL.md)를 먼저 읽으세요.** 아래는 데이터/loss 계약과 상세 참고입니다.
 
 이 문서는 **구현된** `Flow Matching + Physics-Informed Manifold MoE + Ensemble`의 새 학습 profile입니다.

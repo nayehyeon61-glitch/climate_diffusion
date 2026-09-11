@@ -1,0 +1,289 @@
+{
+  "format": "climate_diffusion.manifold_moe_evaluation.v1",
+  "checkpoint": "outputs/recurrent-smoke-final/baseline-c.pt",
+  "checkpoint_sha256": "21d977368626b6eeaf161a8e620547eee207486f92bc11b6f2d06a7677d8ea64",
+  "archive": "outputs/recurrent-smoke-final/synthetic-states.npz",
+  "test_windows": [],
+  "evaluation_windows": [
+    346,
+    390
+  ],
+  "evaluation_split": "validation",
+  "ensemble_size": 3,
+  "integration_steps": 2,
+  "max_cases": 2,
+  "normalized_overall": {
+    "mae": 0.9433979988098145,
+    "rmse": 1.0979409217834473,
+    "bias": 0.027579914778470993,
+    "crps": 0.9171477556228638,
+    "ensemble_spread": 0.056183574721217155,
+    "persistence_rmse": 0.6903391480445862,
+    "climatology_rmse": 1.046998143196106,
+    "energy": 1.0640211722143222,
+    "coverage_80": 0.024218749999999997,
+    "rms_spread": 0.0762103431413058,
+    "spread_skill_ratio": 0.06941206182342949
+  },
+  "by_variable_raw_units": {
+    "msl": {
+      "mae": 395.0777282714844,
+      "rmse": 477.25872802734375,
+      "bias": 3.25341796875
+    },
+    "t2m": {
+      "mae": 2.1024837493896484,
+      "rmse": 2.3563692569732666,
+      "bias": -0.015041803941130638
+    },
+    "u10": {
+      "mae": 3.5339760780334473,
+      "rmse": 4.435705184936523,
+      "bias": 0.31931108236312866
+    },
+    "v10": {
+      "mae": 3.677478075027466,
+      "rmse": 4.612974166870117,
+      "bias": 0.3011866509914398
+    }
+  },
+  "by_case_normalized": [
+    {
+      "mae": 0.9470985531806946,
+      "rmse": 1.0952794551849365,
+      "bias": 0.023089373484253883,
+      "window_index": 346,
+      "target_time": "2001-03-30T00:00:00.000000000",
+      "last_target_time": "2001-04-03T18:00:00.000000000",
+      "crps": 0.9139044284820557,
+      "ensemble_spread": 0.0729588121175766,
+      "energy": 1.0521884023480403,
+      "temporal": {
+        "loss_trajectory": 1.7140614986419678,
+        "loss_delta": 2.1815237998962402,
+        "loss_delta_member": 2.198448657989502,
+        "delta_member_variance_penalty": 0.016924966126680374,
+        "increment_spread": 0.07028131932020187,
+        "trajectory_edges": 20.0,
+        "state_mse_msl": 1.0793601274490356,
+        "state_mse_t2m": 1.0170857906341553,
+        "state_mse_u10": 1.1834383010864258,
+        "state_mse_v10": 1.3402955532073975,
+        "tendency_mse_msl": 2.2175374031066895,
+        "tendency_mse_t2m": 1.812859296798706,
+        "tendency_mse_u10": 2.4235873222351074,
+        "tendency_mse_v10": 2.272111415863037,
+        "loss_wind_speed": 0.5319968461990356,
+        "loss_wind_direction": 2.082927942276001,
+        "wind_direction_valid_fraction": 0.9970238208770752
+      },
+      "coverage_80": 0.03359375,
+      "mean_variance": 0.009126999415457249
+    },
+    {
+      "mae": 0.9396976232528687,
+      "rmse": 1.1005960702896118,
+      "bias": 0.032070375978946686,
+      "window_index": 390,
+      "target_time": "2001-04-10T00:00:00.000000000",
+      "last_target_time": "2001-04-14T18:00:00.000000000",
+      "crps": 0.9203910827636719,
+      "ensemble_spread": 0.03940833732485771,
+      "energy": 1.0758539420806044,
+      "temporal": {
+        "loss_trajectory": 1.7134339809417725,
+        "loss_delta": 1.9880502223968506,
+        "loss_delta_member": 1.9919698238372803,
+        "delta_member_variance_penalty": 0.003919497132301331,
+        "increment_spread": 0.03734459728002548,
+        "trajectory_edges": 20.0,
+        "state_mse_msl": 1.1522043943405151,
+        "state_mse_t2m": 0.9034700989723206,
+        "state_mse_u10": 1.0808881521224976,
+        "state_mse_v10": 1.529450535774231,
+        "tendency_mse_msl": 2.1252102851867676,
+        "tendency_mse_t2m": 1.5445019006729126,
+        "tendency_mse_u10": 2.303187847137451,
+        "tendency_mse_v10": 1.97930109500885,
+        "loss_wind_speed": 0.5495272874832153,
+        "loss_wind_direction": 1.7494125366210938,
+        "wind_direction_valid_fraction": 0.9970238208770752
+      },
+      "coverage_80": 0.01484375,
+      "mean_variance": 0.0024890333879739046
+    }
+  ],
+  "sampling_contract": "shared_member_noise_train_and_inference.v2; trajectory supervision only when enabled",
+  "by_lead_normalized": [
+    {
+      "lead_hours": 6,
+      "mae": 0.9512614011764526,
+      "rmse": 1.1054275035858154,
+      "bias": 0.03859398886561394,
+      "persistence_rmse": 0.2726143002510071
+    },
+    {
+      "lead_hours": 12,
+      "mae": 0.9540318250656128,
+      "rmse": 1.0999584197998047,
+      "bias": 0.023569490760564804,
+      "persistence_rmse": 0.3764737546443939
+    },
+    {
+      "lead_hours": 18,
+      "mae": 0.9418812990188599,
+      "rmse": 1.095339298248291,
+      "bias": 0.030342159792780876,
+      "persistence_rmse": 0.5235900282859802
+    },
+    {
+      "lead_hours": 24,
+      "mae": 0.9458780288696289,
+      "rmse": 1.105677604675293,
+      "bias": 0.035829223692417145,
+      "persistence_rmse": 0.6864885091781616
+    },
+    {
+      "lead_hours": 30,
+      "mae": 0.9599654674530029,
+      "rmse": 1.1085004806518555,
+      "bias": 0.02593529410660267,
+      "persistence_rmse": 0.6553752422332764
+    },
+    {
+      "lead_hours": 36,
+      "mae": 0.95192551612854,
+      "rmse": 1.084959864616394,
+      "bias": 0.021693941205739975,
+      "persistence_rmse": 0.6823528409004211
+    },
+    {
+      "lead_hours": 42,
+      "mae": 0.9452459216117859,
+      "rmse": 1.0800719261169434,
+      "bias": 0.014844980090856552,
+      "persistence_rmse": 0.6955952644348145
+    },
+    {
+      "lead_hours": 48,
+      "mae": 0.912188708782196,
+      "rmse": 1.0638883113861084,
+      "bias": 0.0450541153550148,
+      "persistence_rmse": 0.7595968842506409
+    },
+    {
+      "lead_hours": 54,
+      "mae": 0.9347238540649414,
+      "rmse": 1.0860580205917358,
+      "bias": 0.034571386873722076,
+      "persistence_rmse": 0.6344200968742371
+    },
+    {
+      "lead_hours": 60,
+      "mae": 0.9507781267166138,
+      "rmse": 1.0964664220809937,
+      "bias": 0.021718835458159447,
+      "persistence_rmse": 0.5021260976791382
+    },
+    {
+      "lead_hours": 66,
+      "mae": 0.9320098161697388,
+      "rmse": 1.0881993770599365,
+      "bias": 0.025026973336935043,
+      "persistence_rmse": 0.43055105209350586
+    },
+    {
+      "lead_hours": 72,
+      "mae": 0.9402011632919312,
+      "rmse": 1.1025176048278809,
+      "bias": 0.035186029970645905,
+      "persistence_rmse": 0.3905121684074402
+    },
+    {
+      "lead_hours": 78,
+      "mae": 0.9377774000167847,
+      "rmse": 1.0951379537582397,
+      "bias": 0.014072513207793236,
+      "persistence_rmse": 0.4167465567588806
+    },
+    {
+      "lead_hours": 84,
+      "mae": 0.948796272277832,
+      "rmse": 1.0959218740463257,
+      "bias": 0.016344355419278145,
+      "persistence_rmse": 0.4740161597728729
+    },
+    {
+      "lead_hours": 90,
+      "mae": 0.9552630186080933,
+      "rmse": 1.095975399017334,
+      "bias": 0.024590158835053444,
+      "persistence_rmse": 0.5805537104606628
+    },
+    {
+      "lead_hours": 96,
+      "mae": 0.946056604385376,
+      "rmse": 1.1026040315628052,
+      "bias": 0.020267512649297714,
+      "persistence_rmse": 0.7099010944366455
+    },
+    {
+      "lead_hours": 102,
+      "mae": 0.9490230083465576,
+      "rmse": 1.1019721031188965,
+      "bias": 0.027377113699913025,
+      "persistence_rmse": 0.8420771360397339
+    },
+    {
+      "lead_hours": 108,
+      "mae": 0.9525831937789917,
+      "rmse": 1.1272923946380615,
+      "bias": 0.026401672512292862,
+      "persistence_rmse": 0.9834702610969543
+    },
+    {
+      "lead_hours": 114,
+      "mae": 0.9268953204154968,
+      "rmse": 1.1144170761108398,
+      "bias": 0.027589693665504456,
+      "persistence_rmse": 1.1030728816986084
+    },
+    {
+      "lead_hours": 120,
+      "mae": 0.9314744472503662,
+      "rmse": 1.1068782806396484,
+      "bias": 0.04258885234594345,
+      "persistence_rmse": 1.2202435731887817
+    }
+  ],
+  "moe_mode": "local",
+  "probabilistic_score_estimator": "empirical (diagonal pairs included), not training fair estimator",
+  "stage": "joint",
+  "rank_histogram_counts": [
+    2520,
+    85,
+    73,
+    2442
+  ],
+  "rank_histogram_contract": "pooled scalar coordinates/leads; randomized ties; correlated samples",
+  "temporal_overall": {
+    "loss_trajectory": 1.7137477397918701,
+    "loss_delta": 2.0847870111465454,
+    "loss_delta_member": 2.095209240913391,
+    "delta_member_variance_penalty": 0.010422231629490852,
+    "increment_spread": 0.05381295830011368,
+    "trajectory_edges": 20.0,
+    "state_mse_msl": 1.1157822608947754,
+    "state_mse_t2m": 0.9602779448032379,
+    "state_mse_u10": 1.1321632266044617,
+    "state_mse_v10": 1.4348730444908142,
+    "tendency_mse_msl": 2.1713738441467285,
+    "tendency_mse_t2m": 1.6786805987358093,
+    "tendency_mse_u10": 2.3633875846862793,
+    "tendency_mse_v10": 2.1257062554359436,
+    "loss_wind_speed": 0.5407620668411255,
+    "loss_wind_direction": 1.9161702394485474,
+    "wind_direction_valid_fraction": 0.9970238208770752
+  },
+  "temporal_estimator": "fair off-diagonal Energy, full physical horizon including observed origin"
+}

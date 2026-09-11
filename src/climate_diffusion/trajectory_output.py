@@ -110,7 +110,7 @@ def plot_member_series(aligned, output):
 
 
 def render_member(aligned, member, output, *, fps=2.5, reference_label="Actual ERA5",
-                  color_limits=None, quiver_scale=None):
+                  color_limits=None, quiver_scale=None, adaptive_quiver=False):
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation, PillowWriter, FFMpegWriter
     if not 0 <= member < len(aligned.members) or not np.isfinite(fps) or fps <= 0:
@@ -154,11 +154,19 @@ def render_member(aligned, member, output, *, fps=2.5, reference_label="Actual E
         images.append(im); arrows.append(q)
     fig.colorbar(images[0],ax=axes,shrink=0.8,label="t2m (K)")
     def update(k):
+        if adaptive_quiver:
+            # One scale shared by BOTH panels per frame; fixed companion is the
+            # quantitative comparison. Never independently normalize each arrow.
+            speed=np.r_[np.hypot(field(prediction[k],us),field(prediction[k],vs)).ravel(),
+                        np.hypot(field(aligned.truth[k],us),field(aligned.truth[k],vs)).ravel()]
+            frame_scale=max(float(np.percentile(speed,95)),1.)/8
+            for arrow in arrows: arrow.scale=frame_scale
         for image,arrow,values in zip(images,arrows,(prediction,aligned.truth)):
             image.set_array(scalar(values[k]).ravel())
             arrow.set_UVC(field(values[k],us)[::stride,::stride],field(values[k],vs)[::stride,::stride])
         fig.suptitle(f"Member {member} vs {reference_label} | +{aligned.lead_hours[k]}h | origin {aligned.origin_time}\n"
-                     f"valid {aligned.valid_times[k]} | fixed-grid Eulerian wind")
+                     f"valid {aligned.valid_times[k]} | fixed-grid Eulerian wind"
+                     + (" | ADAPTIVE scale: diagnostic only" if adaptive_quiver else " | FIXED scale"))
         return images+arrows
     output=Path(output)
     if output.exists(): raise FileExistsError(output)
@@ -174,7 +182,8 @@ def render_member(aligned, member, output, *, fps=2.5, reference_label="Actual E
 
 
 def export_trajectories(forecast, archive, output_dir, *, horizon_hours=120, interval_hours=6,
-                        members=None, extension="mp4", fps=2.5, reference_label="Actual ERA5"):
+                        members=None, extension="mp4", fps=2.5, reference_label="Actual ERA5",
+                        diagnostic_views=False):
     if extension not in {"mp4","gif"}: raise ValueError("extension must be mp4 or gif")
     if horizon_hours<=0 or interval_hours<=0 or horizon_hours%interval_hours:
         raise ValueError("Horizon must be a positive multiple of output interval")
@@ -192,11 +201,13 @@ def export_trajectories(forecast, archive, output_dir, *, horizon_hours=120, int
         origin_time=aligned.origin_time,origin_state=aligned.origin_state,member_ids=np.arange(len(aligned.members)),
         lead_hours=aligned.lead_hours,valid_times=aligned.valid_times,forecast_step_hours=model_step,
         source_forecast_step_hours=model_step,output_interval_hours=interval_hours,
+        sampling_contract=aligned.sampling_contract,
         schema_json=json.dumps(aligned.schema),temporal_statistics_json=json.dumps(stats))
     report={"format":"climate_diffusion.trajectory_export.v1","source_forecast":str(forecast),
             "source_model_step_hours":model_step,"output_interval_hours":interval_hours,
             "horizon_hours":horizon_hours,"member_count":len(aligned.members),"rendered_member_ids":ids,
             "ensemble_mean_is_not_default_output":True,"reference_label":reference_label,
+            "sampling_contract":aligned.sampling_contract,
             "by_variable_ensemble":{}}
     area=area_weights(aligned.schema).ravel()
     dt=np.diff(np.r_[0,aligned.lead_hours])
@@ -212,8 +223,65 @@ def export_trajectories(forecast, archive, output_dir, *, horizon_hours=120, int
         diagnostics=member_diagnostics(aligned,member,stats)
         (output/f"member-{member:03d}.json").write_text(json.dumps(diagnostics,indent=2,allow_nan=False)+"\n")
         render_member(aligned,member,output/f"member-{member:03d}.{extension}",fps=fps,reference_label=reference_label)
+        if diagnostic_views:
+            render_member(aligned,member,output/f"member-{member:03d}-adaptive.gif",fps=fps,
+                          reference_label=reference_label,adaptive_quiver=True)
+            render_dynamics_maps(aligned,member,output/f"member-{member:03d}-dynamics.gif",fps=fps,
+                                 reference_label=reference_label)
+    report['diagnostic_views']=diagnostic_views
     (output/"summary.json").write_text(json.dumps(report,indent=2,allow_nan=False)+"\n")
     plot_member_series(aligned,output/"member-tendencies.png")
+    return output
+
+
+def render_dynamics_maps(aligned, member, output, *, fps=2.5, reference_label="Actual ERA5"):
+    """Physical wind magnitude + adjacent temperature tendency, exact native dt.
+
+    Difference divided by actual hours, not by display frame count; not an
+    adaptive speed-up. Fixed color scales across frames and prediction/truth.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.animation import FuncAnimation, PillowWriter
+    ts,shape=_variable(aligned.schema,'t2m')
+    us,_=_variable(aligned.schema,'u10'); vs,_=_variable(aligned.schema,'v10')
+    coords=aligned.schema['variables'][0]['coords']
+    lon=(np.asarray(coords['lon'])+180)%360-180; order=np.argsort(lon); lon=lon[order]
+    lat=np.asarray(coords['lat'])
+    cyclic=len(lon)>=3 and np.allclose(np.diff(lon),np.diff(lon)[0]) and np.isclose(np.diff(lon)[0]*len(lon),360)
+    plot_lon=np.r_[lon,lon[0]+360] if cyclic else lon
+    def scalar(v): return np.concatenate((v,v[...,:1]),-1) if cyclic else v
+    dt=np.diff(np.r_[0,aligned.lead_hours])
+    values=[]
+    for states in (aligned.members[member],aligned.truth):
+        speed=np.hypot(states[:,us],states[:,vs]).reshape(-1,*shape)[...,order]
+        delta=np.diff(np.concatenate((aligned.origin_state[None],states)),axis=0)/dt[:,None]
+        tendency=delta[:,ts].reshape(-1,*shape)[...,order]
+        values.append((speed,tendency))
+    max_speed=max(float(v[0].max()) for v in values)
+    max_tendency=max(max(float(np.abs(v[1]).max()) for v in values),1e-6)
+    fig,axes=plt.subplots(2,2,figsize=(11,7),layout='constrained')
+    images=[]
+    for row in range(2):
+        row_images=[]
+        for col in range(2):
+            ax=axes[row,col]
+            im=ax.pcolormesh(plot_lon,lat,scalar(values[col][row][0]),shading='auto',
+                cmap='viridis' if row==0 else 'RdBu_r',vmin=0 if row==0 else -max_tendency,
+                vmax=max(max_speed,1e-6) if row==0 else max_tendency)
+            _coastlines(ax); ax.set(xlim=(-180,180),ylim=(-90,90),
+                title=(f'Member {member}' if col==0 else reference_label)); row_images.append(im)
+        fig.colorbar(row_images[0],ax=axes[row].tolist(),label='Wind speed (m/s)' if row==0 else 'Temperature difference / actual dt (K/hour)')
+        images.append(row_images)
+    def update(k):
+        for row in range(2):
+            for col in range(2): images[row][col].set_array(scalar(values[col][row][k]).ravel())
+        fig.suptitle(f'Physical dynamics diagnostic | member {member} | +{aligned.lead_hours[k]}h\n'
+                     f'origin {aligned.origin_time} | valid {aligned.valid_times[k]} | dt={dt[k]}h')
+    output=Path(output)
+    if output.exists(): raise FileExistsError(output)
+    update(0); fig.savefig(output.with_suffix('.png'),dpi=110)
+    animation=FuncAnimation(fig,update,frames=len(dt),interval=1000/fps)
+    animation.save(output,writer=PillowWriter(fps=fps),dpi=85); plt.close(fig)
     return output
 
 
@@ -228,6 +296,7 @@ def main(argv=None):
     parser.add_argument("--extension",choices=("mp4","gif"),default="mp4")
     parser.add_argument("--fps",type=float,default=2.5)
     parser.add_argument("--reference-label",default="Actual ERA5")
+    parser.add_argument("--diagnostic-views",action="store_true",help="Also render adaptive quiver and physical difference maps; fixed output retained")
     args=vars(parser.parse_args(argv))
     print(export_trajectories(**args))
     return 0

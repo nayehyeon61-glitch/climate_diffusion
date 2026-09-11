@@ -1,5 +1,7 @@
 # Full-state Flow Matching MoE
 
+**물리시간 재귀 Flow 신규 경로:** [RECURRENT_TRAINING_MANUAL.md](RECURRENT_TRAINING_MANUAL.md) — drift+residual FM, full120h, member loss와 진단. 기존 checkpoint를 자동 전환하지 않습니다.
+
 **전체 실행 매뉴얼:** [TRAINING_MANUAL.md](TRAINING_MANUAL.md) — 환경·ERA5 준비부터 새 A→B→C, validation/test, member별 영상까지 순서대로 실행합니다.
 
 **새 dynamics loss + 120시간 trajectory + member별 영상:**

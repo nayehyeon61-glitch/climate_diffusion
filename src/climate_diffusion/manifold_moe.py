@@ -20,6 +20,7 @@ from .model import sinusoidal_time_embedding
 from .manifold_physics import SurfacePhysics
 
 MANIFOLD_FORMAT = "climate_diffusion.manifold_moe.v1"
+RECURRENT_FORMAT = "climate_diffusion.manifold_recurrent_fm.v1"
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,8 @@ class ManifoldMoEConfig:
     locality_weight: float = 2.0
     gate_correction_limit: float = 0.5
     projection_ridge: float = 1e-3
+    forecast_dynamics: str = "lead_conditioned"
+    residual_noise_std: float = 1.0  # standardized intrinsic coordinates / day
 
     def __post_init__(self):
         object.__setattr__(self, "grid", tuple(self.grid))
@@ -53,10 +56,12 @@ class ManifoldMoEConfig:
         if min(counts) < 1 or self.num_experts < 2 or self.manifold_dim >= self.state_dim:
             raise ValueError("Positive dimensions, K>=2 and manifold_dim < state_dim are required")
         for name in ("gate_temperature", "responsibility_temperature", "locality_weight",
-                     "gate_correction_limit", "projection_ridge"):
+                     "gate_correction_limit", "projection_ridge", "residual_noise_std"):
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
+        if self.forecast_dynamics not in {"lead_conditioned", "recurrent_residual"}:
+            raise ValueError("Unknown forecast_dynamics contract")
 
     @property
     def history_span_steps(self):
@@ -230,7 +235,12 @@ class ManifoldMoE(nn.Module):
             normal_q = q.clone() if torch.is_inference(q) else q
             return torch.func.vmap(torch.func.jacfwd(self.decode))(normal_q)
 
-    def field(self, q, tau, context, lead, *, mode=None):
+    def field(self, q, tau, context, lead, *, mode=None, physical_q=None):
+        # Recurrent mode: q is residual-space FM state (q/day), physical_q is
+        # the current physical state. Never project at a residual/noise state.
+        if self.config.forecast_dynamics == "recurrent_residual" and physical_q is None:
+            raise ValueError("Residual FM field requires physical_q; tau is not physical time")
+        chart_q = q if physical_q is None else physical_q
         if not bool(self.manifold_ready):
             raise ValueError("Pretrain and seal the manifold before expert flow evaluation")
         mode = mode or "local"
@@ -240,17 +250,17 @@ class ManifoldMoE(nn.Module):
         width = self.config.time_embedding_dim
         condition = torch.cat((context, sinusoidal_time_embedding(tau, width),
                                sinusoidal_time_embedding(lead, width)), -1)
-        log_gate, local_log_prior = self.gate(q, condition)
+        log_gate, local_log_prior = self.gate(chart_q, condition)
         pi = log_gate.exp()
         if mode == "uniform":
             pi = torch.full_like(pi, 1 / self.config.num_experts)
         elif mode.startswith("expert:"):
             pi = F.one_hot(torch.full((len(q),), int(mode[7:]), device=q.device), self.config.num_experts).to(q)
-        shared_state = self.manifold.spatial_dct(self.decode(q))
+        shared_state = self.manifold.spatial_dct(self.decode(chart_q))
         expert_condition = torch.cat((q, condition), -1)
         spectral = torch.stack([expert(shared_state, expert_condition) for expert in self.experts], 1)
         raw = self.manifold.spatial_dct(spectral, inverse=True)
-        jacobian = self.jacobian(q)
+        jacobian = self.jacobian(chart_q)
         intrinsic, projected, metric = tangent_lift(jacobian, raw, self.physics.metric_weights,
                                                    self.config.projection_ridge)
         velocity = (pi[..., None] * intrinsic).sum(1)
@@ -296,8 +306,8 @@ class ManifoldMoE(nn.Module):
 
     def specialization_loss(self, q, target_velocity, tau, context, lead, *, gate_weight=0.2,
                             balance_weight=0.05, diversity_weight=0.001, projection_weight=0.05,
-                            entropy_weight=0.01):
-        result = self.field(q, tau, context, lead)
+                            entropy_weight=0.01, physical_q=None):
+        result = self.field(q, tau, context, lead, physical_q=physical_q)
         errors = (result["intrinsic_candidates"] - target_velocity[:, None]).square().mean(-1)
         # Detached E-step target: expert fit + immutable geometric region prior.
         responsibilities = F.softmax(result["local_log_prior"].detach()
@@ -334,7 +344,7 @@ class ManifoldMoE(nn.Module):
         return metrics
 
     def sample_trajectory(self, context, lead_steps, *, ensemble_size, integration_steps,
-                          generator=None, initial=None, origin=None, mode=None):
+                          generator=None, initial=None, origin=None, mode=None, trace=None):
         """Differentiable common sampler for train/inference, [B,M,P,D].
 
         Integer physical steps include observed origin 0. The checkpoint horizon,
@@ -353,6 +363,10 @@ class ManifoldMoE(nn.Module):
                                   dtype=context.dtype, generator=generator)
         if initial.shape != (b, ensemble_size, self.config.manifold_dim):
             raise ValueError("initial must be [batch,member,manifold_dim]")
+        if self.config.forecast_dynamics == "recurrent_residual":
+            from .recurrent_flow import sample_recurrent_trajectory
+            return sample_recurrent_trajectory(self, context, lead_steps, initial,
+                origin=origin, integration_steps=integration_steps, mode=mode, trace=trace)
         common = context.repeat_interleave(ensemble_size, 0)
         noise = initial.reshape(b*ensemble_size, -1)
         outputs = []
@@ -380,4 +394,5 @@ class ManifoldMoE(nn.Module):
             raise ValueError("lead_indices must be within the trained horizon")
         steps = (torch.tensor(leads, device=history.device) + 1)[None].expand(len(history), -1)
         return self.sample_trajectory(self.encode_history(history), steps, ensemble_size=ensemble_size,
-                                      integration_steps=integration_steps, generator=generator, mode=mode)
+                                      integration_steps=integration_steps, generator=generator, mode=mode,
+                                      origin=history[:, -1] if origin is None else origin)

@@ -1,5 +1,13 @@
 # Climate Flow: Manifold MoE, Full-state MoE 및 Dynamics 구조
 
+## 물리시간 재귀 residual FM (2026-09-11)
+
+- [13-physical-recurrent-training.md](13-physical-recurrent-training.md): A/B/C, full120h BPTT, 두 시간축과 shape
+- [14-residual-fm-and-physical-step.md](14-residual-fm-and-physical-step.md): residual tau ODE와 physical Euler step
+- [새 전체 실행 매뉴얼](../flow-matching_moe/RECURRENT_TRAINING_MANUAL.md)
+
+아래 기존 그림은 `lead_conditioned` checkpoint의 경로이며 새 recurrent 경로와 구분합니다.
+
 ## 구현된 dynamics loss / 120h trajectory (2026-09-10)
 
 - [11-temporal-training-implemented.md](11-temporal-training-implemented.md): 새 delta / joint trajectory / wind loss, A/B/C gradient

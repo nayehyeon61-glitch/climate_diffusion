@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
-from .manifold_moe import MANIFOLD_FORMAT, ManifoldMoE, ManifoldMoEConfig
+from .manifold_moe import MANIFOLD_FORMAT, RECURRENT_FORMAT, ManifoldMoE, ManifoldMoEConfig
 from .moe import ensemble_scores
 from .moe_data import build_moe_split, field_grid, load_moe_archive, validate_moe_split
 from .train import _sha256
@@ -24,7 +24,8 @@ def _json(path, value):
 
 
 def _save(path, model, schema, mean, scale, training, rows):
-    payload = {"format": MANIFOLD_FORMAT, "model_config": asdict(model.config),
+    checkpoint_format = RECURRENT_FORMAT if model.config.forecast_dynamics == "recurrent_residual" else MANIFOLD_FORMAT
+    payload = {"format": checkpoint_format, "model_config": asdict(model.config),
                "model": model.state_dict(), "schema": schema,
                "state_mean": torch.as_tensor(mean), "state_scale": torch.as_tensor(scale),
                "training": training}
@@ -38,7 +39,8 @@ def _save(path, model, schema, mean, scale, training, rows):
           "metrics": path.with_suffix(".metrics.json").name})
 
 
-def _pairs(model, batch, generator, lead_count, *, selection_generator=None, tau_generator=None, return_steps=False):
+def _pairs(model, batch, generator, lead_count, *, selection_generator=None, tau_generator=None,
+           return_steps=False, return_physical=False):
     targets = batch["targets"]
     count = min(lead_count, targets.shape[1])
     horizon = targets.shape[1]
@@ -53,22 +55,33 @@ def _pairs(model, batch, generator, lead_count, *, selection_generator=None, tau
     context = model.encode_history(batch["history"])[:, None].expand(-1, count, -1).reshape(len(target), -1)
     # Do not let the encoder shrink/move FM targets to make transport loss easy.
     code = model.encode(target).detach()
+    physical_q = None
+    if model.config.forecast_dynamics == "recurrent_residual":
+        from .recurrent_flow import residual_target
+        previous = torch.cat((batch["origin"][:,None], targets[:,:-1]),1)[rows,picks].reshape_as(target)
+        actual_dt = batch["dt_hours"][rows,picks].flatten()
+        physical_q, code = residual_target(model, previous, target, actual_dt)
     # Reuse the same intrinsic source across adjacent leads, consistent with
     # member coupling at inference. This is conditioning repair, not joint-law training.
     source = torch.randn((len(targets), 1, code.shape[-1]), device=code.device,
                          dtype=code.dtype, generator=generator).expand(-1, count, -1).reshape_as(code)
+    if physical_q is not None:
+        source = source * model.config.residual_noise_std
     tau = torch.rand(len(code), device=code.device, dtype=code.dtype, generator=tau_generator or generator)
     lead = (picks.flatten().to(code) + 1) / targets.shape[1]
+    if physical_q is not None:
+        lead = picks.flatten().to(code) / model.config.horizon_steps  # physical step START
     q = (1 - tau[:, None]) * source + tau[:, None] * code
     result = (q, code - source, tau, context, lead, target)
-    return (*result, picks+1) if return_steps else result
+    result = (*result, picks+1) if return_steps else result
+    return (*result, physical_q) if return_physical else result
 
 
-def _sample(model, context, lead_steps, members, steps, generator):
+def _sample(model, context, lead_steps, members, steps, generator, origin=None):
     b, p = lead_steps.shape
     shared_context = context.reshape(b,p,-1)[:,0]
     sample = model.sample_trajectory(shared_context, lead_steps, ensemble_size=members,
-                                     integration_steps=steps, generator=generator)
+                                     integration_steps=steps, generator=generator, origin=origin)
     return sample.permute(0,2,1,3).reshape(b*p,members,-1)
 
 
@@ -78,7 +91,7 @@ def _epoch(model, loader, device, generator, optimizer, options, *, temporal=Non
     totals, count = {}, 0
     streams = streams or {k: generator for k in ("selection", "tau", "ensemble", "block", "trajectory_ensemble")}
     temporal_active = any(options.get(k, 0) > 0 for k in
-                          ("delta_weight", "trajectory_weight", "wind_speed_weight", "wind_direction_weight"))
+                          ("delta_weight", "delta_member_weight", "trajectory_weight", "wind_speed_weight", "wind_direction_weight"))
     pi_options = {k: options[k] for k in ("physics_weight", "invariant_weight", "metric_weight", "dynamics_weight")}
     specialist_options = {k: options[k] for k in ("gate_weight", "balance_weight", "diversity_weight",
                                                   "projection_weight", "entropy_weight")}
@@ -97,13 +110,14 @@ def _epoch(model, loader, device, generator, optimizer, options, *, temporal=Non
                 size = len(state)
             else:
                 batch = {k: v.to(device) for k, v in batch.items()}
-                q, velocity, tau, context, lead, target, lead_steps = _pairs(
+                q, velocity, tau, context, lead, target, lead_steps, physical_q = _pairs(
                     model, batch, generator, options["sampled_leads"], selection_generator=streams["selection"],
-                    tau_generator=streams["tau"], return_steps=True)
-                metrics = model.specialization_loss(q, velocity, tau, context, lead, **specialist_options)
+                    tau_generator=streams["tau"], return_steps=True, return_physical=True)
+                metrics = model.specialization_loss(q, velocity, tau, context, lead,
+                                                    physical_q=physical_q, **specialist_options)
                 if model.stage == "joint" or not training:
                     samples = _sample(model, context, lead_steps, options["ensemble_size"],
-                                      options["integration_steps"], streams["ensemble"])
+                                      options["integration_steps"], streams["ensemble"], origin=batch["origin"])
                     metrics.update(ensemble_scores(samples, target))
                     spread = samples.std(1, unbiased=False)
                     metrics["ensemble_spread"] = spread.mean()
@@ -128,8 +142,8 @@ def _epoch(model, loader, device, generator, optimizer, options, *, temporal=Non
                         ensemble_size=options["ensemble_size"], integration_steps=options["integration_steps"],
                         generator=streams["trajectory_ensemble"], origin=batch["origin"])
                     metrics.update(temporal(generated, truth, dt, mask))
-                    extra = sum(options[k+"_weight"] * metrics["loss_"+k]
-                                for k in ("delta", "trajectory", "wind_speed", "wind_direction"))
+                    extra = sum(options.get(k+"_weight",0) * metrics["loss_"+k]
+                                for k in ("delta", "delta_member", "trajectory", "wind_speed", "wind_direction"))
                     metrics["temporal_ramp"] = generated.new_tensor(options.get("temporal_ramp", 1.))
                     metrics["loss"] = metrics["loss"] + metrics["temporal_ramp"] * extra
                     if training and options.get("log_gradient_norms"):
@@ -164,6 +178,7 @@ def train_manifold_moe(archive_path, output_path, *, stage="all", init_checkpoin
                        balance_weight=0.05, diversity_weight=0.001, projection_weight=0.05,
                        entropy_weight=0.01, energy_weight=0.5, crps_weight=0.5,
                        joint_pi_weight=0.5, anchor_weight=1.0, delta_weight=0.0, trajectory_weight=0.0,
+                       delta_member_weight=0.0,
                        wind_speed_weight=0.0, wind_direction_weight=0.0, trajectory_edges=2,
                        validation_trajectory_edges=0, temporal_warmup_epochs=3,
                        trajectory_selection_weight=0.1, variable_weights=None, log_gradient_norms=False,
@@ -280,6 +295,16 @@ def train_manifold_moe(archive_path, output_path, *, stage="all", init_checkpoin
             "rng_contract": "separate FM source/tau/lead/block/marginal-ensemble/trajectory-ensemble/shuffle streams.v1",
             "training_trajectory_contract": "full window" if trajectory_edges == 0 else "contiguous sub-block",
             "parameter_count": sum(p.numel() for p in model.parameters())}
+    if config.forecast_dynamics == "recurrent_residual":
+        base.update(sampling_contract="physical_recurrent_residual_fm.v1; persistent member source; origin-anchored chart",
+            training_lead_sampling="teacher-forced adjacent physical transitions for residual FM only",
+            lead_condition_contract="physical step start hours / trained horizon_hours; tau separate",
+            drift_unit="encoder z/day; divide latent_scale for q/day; divide 24 for q/hour",
+            residual_contract="conditional FM endpoint in q/day; never add dresidual/dtau to physical drift",
+            physical_integrator="Euler at archive step_hours; full prefix from origin without detach",
+            origin_decode_contract="origin + decode(q_j) - decode(q_origin); fixed chart offset",
+            training_trajectory_contract="full recurrent BPTT; full-window score" if trajectory_edges==0 else
+                "full prefix BPTT; score contiguous sub-block (NOT full-window score)")
     phases = ("manifold", "specialize", "joint") if stage == "all" else (stage,)
     rows = []
     previous = Path(init_checkpoint) if init_checkpoint else None
@@ -372,7 +397,7 @@ def main(argv=None):
     integer_model = ("history_steps", "history_stride", "horizon_steps", "num_experts", "manifold_dim",
                      "expert_latent_dim", "gate_hidden_dim", "hidden_dim", "context_dim")
     float_model = ("gate_temperature", "responsibility_temperature", "locality_weight",
-                   "gate_correction_limit", "projection_ridge")
+                   "gate_correction_limit", "projection_ridge", "residual_noise_std")
     for name in integer_model + float_model:
         parser.add_argument("--" + name.replace("_", "-"), type=int if name in integer_model else float)
     for name, default in (("manifold_epochs", 30), ("expert_epochs", 30), ("joint_epochs", 10),
@@ -387,15 +412,17 @@ def main(argv=None):
                           ("diversity_weight", 0.001), ("projection_weight", 0.05), ("entropy_weight", 0.01),
                           ("energy_weight", 0.5), ("crps_weight", 0.5), ("joint_pi_weight", 0.5),
                           ("anchor_weight", 1.0), ("delta_weight", 0.0), ("trajectory_weight", 0.0),
+                          ("delta_member_weight", 0.0),
                           ("wind_speed_weight", 0.0), ("wind_direction_weight", 0.0),
                           ("trajectory_selection_weight", 0.1), ("weight_decay", 0.0)):
         parser.add_argument("--" + name.replace("_", "-"), type=float, default=default)
     parser.add_argument("--device")
+    parser.add_argument("--forecast-dynamics", choices=("lead_conditioned","recurrent_residual"))
     parser.add_argument("--log-gradient-norms", action="store_true")
     parser.add_argument("--variable-weights", help="JSON object, e.g. '{\"msl\":1,\"t2m\":1,\"u10\":0.5,\"v10\":0.5}'")
     args = vars(parser.parse_args(argv))
     args["variable_weights"] = json.loads(args["variable_weights"]) if args["variable_weights"] else None
-    model_options = {name: args.pop(name) for name in integer_model + float_model}
+    model_options = {name: args.pop(name) for name in (*integer_model, *float_model, "forecast_dynamics")}
     print(train_manifold_moe(args.pop("archive"), args.pop("output"),
                              model_options={k: v for k, v in model_options.items() if v is not None}, **args))
     return 0

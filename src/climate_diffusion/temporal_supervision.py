@@ -208,6 +208,8 @@ class TemporalObjective(nn.Module):
                            (dt * metric / np.sqrt(p-1)).flatten(1)), -1)
         metrics = {"loss_trajectory": fair_energy(features, truth),
                    "loss_delta": ((ds.mean(1)-dt).square()*self.metric).sum(-1).mean(),
+                   "loss_delta_member": ((ds-dt[:,None]).square()*self.metric).sum(-1).mean(),
+                   "delta_member_variance_penalty": (ds.var(1,unbiased=False)*self.metric).sum(-1).mean(),
                    "increment_spread": (ds.std(1, unbiased=False)*self.metric).sum(-1).mean(),
                    "trajectory_edges": samples.new_tensor(p-1)}
         metrics.update(self.state_metrics(samples.mean(1), target))

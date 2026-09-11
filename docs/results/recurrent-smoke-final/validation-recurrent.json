@@ -1,0 +1,289 @@
+{
+  "format": "climate_diffusion.manifold_moe_evaluation.v1",
+  "checkpoint": "outputs/recurrent-smoke-final/recurrent-c.pt",
+  "checkpoint_sha256": "f361c5e046ff0ef0dc1d5ef38b4ea4eada1371ab5b89ee2b0879bc34e5b6f1f4",
+  "archive": "outputs/recurrent-smoke-final/synthetic-states.npz",
+  "test_windows": [],
+  "evaluation_windows": [
+    346,
+    390
+  ],
+  "evaluation_split": "validation",
+  "ensemble_size": 3,
+  "integration_steps": 2,
+  "max_cases": 2,
+  "normalized_overall": {
+    "mae": 0.5463700890541077,
+    "rmse": 0.7137771248817444,
+    "bias": 0.004578739404678345,
+    "crps": 0.49865178763866425,
+    "ensemble_spread": 0.12310970574617386,
+    "persistence_rmse": 0.6903391480445862,
+    "climatology_rmse": 1.046998143196106,
+    "energy": 0.5897006655132666,
+    "coverage_80": 0.11796875,
+    "rms_spread": 0.17873446773440274,
+    "spread_skill_ratio": 0.2504065505938072
+  },
+  "by_variable_raw_units": {
+    "msl": {
+      "mae": 223.29501342773438,
+      "rmse": 308.3747863769531,
+      "bias": 7.339434623718262
+    },
+    "t2m": {
+      "mae": 1.284255862236023,
+      "rmse": 1.6247599124908447,
+      "bias": 0.10080959647893906
+    },
+    "u10": {
+      "mae": 1.9697787761688232,
+      "rmse": 2.7491915225982666,
+      "bias": -0.043691352009773254
+    },
+    "v10": {
+      "mae": 2.074549913406372,
+      "rmse": 2.801236391067505,
+      "bias": -0.011025704443454742
+    }
+  },
+  "by_case_normalized": [
+    {
+      "mae": 0.5443887114524841,
+      "rmse": 0.6947413682937622,
+      "bias": 0.00024580731405876577,
+      "window_index": 346,
+      "target_time": "2001-03-30T00:00:00.000000000",
+      "last_target_time": "2001-04-03T18:00:00.000000000",
+      "crps": 0.48924174904823303,
+      "ensemble_spread": 0.153285413980484,
+      "energy": 0.5802860710802972,
+      "temporal": {
+        "loss_trajectory": 1.0826276540756226,
+        "loss_delta": 1.0677865743637085,
+        "loss_delta_member": 1.0756433010101318,
+        "delta_member_variance_penalty": 0.007856728509068489,
+        "increment_spread": 0.06623461097478867,
+        "trajectory_edges": 20.0,
+        "state_mse_msl": 0.41696393489837646,
+        "state_mse_t2m": 0.4249592423439026,
+        "state_mse_u10": 0.44132640957832336,
+        "state_mse_v10": 0.5812093019485474,
+        "tendency_mse_msl": 0.9838215708732605,
+        "tendency_mse_t2m": 1.0818870067596436,
+        "tendency_mse_u10": 1.0541623830795288,
+        "tendency_mse_v10": 1.151275396347046,
+        "loss_wind_speed": 0.2972100079059601,
+        "loss_wind_direction": 0.5419620275497437,
+        "wind_direction_valid_fraction": 0.9970238208770752
+      },
+      "coverage_80": 0.14375,
+      "mean_variance": 0.046575747430324554
+    },
+    {
+      "mae": 0.5483514070510864,
+      "rmse": 0.7323183417320251,
+      "bias": 0.008911584503948689,
+      "window_index": 390,
+      "target_time": "2001-04-10T00:00:00.000000000",
+      "last_target_time": "2001-04-14T18:00:00.000000000",
+      "crps": 0.5080618262290955,
+      "ensemble_spread": 0.09293399751186371,
+      "energy": 0.599115259946236,
+      "temporal": {
+        "loss_trajectory": 1.0954594612121582,
+        "loss_delta": 0.9307811856269836,
+        "loss_delta_member": 0.9342201948165894,
+        "delta_member_variance_penalty": 0.0034391009248793125,
+        "increment_spread": 0.042337678372859955,
+        "trajectory_edges": 20.0,
+        "state_mse_msl": 0.5168753862380981,
+        "state_mse_t2m": 0.465179979801178,
+        "state_mse_u10": 0.4399898648262024,
+        "state_mse_v10": 0.6445662379264832,
+        "tendency_mse_msl": 0.9632989168167114,
+        "tendency_mse_t2m": 0.8425437808036804,
+        "tendency_mse_u10": 0.9498674273490906,
+        "tendency_mse_v10": 0.9674142003059387,
+        "loss_wind_speed": 0.3032422959804535,
+        "loss_wind_direction": 0.6631609201431274,
+        "wind_direction_valid_fraction": 0.9970238208770752
+      },
+      "coverage_80": 0.0921875,
+      "mean_variance": 0.017316272482275963
+    }
+  ],
+  "sampling_contract": "physical_recurrent_residual_fm.v1; persistent member source; origin-anchored chart",
+  "by_lead_normalized": [
+    {
+      "lead_hours": 6,
+      "mae": 0.20845527946949005,
+      "rmse": 0.272187203168869,
+      "bias": 0.007308381609618664,
+      "persistence_rmse": 0.2726143002510071
+    },
+    {
+      "lead_hours": 12,
+      "mae": 0.30484652519226074,
+      "rmse": 0.3759700357913971,
+      "bias": -0.006169739179313183,
+      "persistence_rmse": 0.3764737546443939
+    },
+    {
+      "lead_hours": 18,
+      "mae": 0.43142184615135193,
+      "rmse": 0.5240640640258789,
+      "bias": 0.002683386206626892,
+      "persistence_rmse": 0.5235900282859802
+    },
+    {
+      "lead_hours": 24,
+      "mae": 0.5801366567611694,
+      "rmse": 0.6886983513832092,
+      "bias": 0.006142633035778999,
+      "persistence_rmse": 0.6864885091781616
+    },
+    {
+      "lead_hours": 30,
+      "mae": 0.5593050122261047,
+      "rmse": 0.6598854660987854,
+      "bias": -0.00019817426800727844,
+      "persistence_rmse": 0.6553752422332764
+    },
+    {
+      "lead_hours": 36,
+      "mae": 0.5697614550590515,
+      "rmse": 0.6899347901344299,
+      "bias": -0.006713734939694405,
+      "persistence_rmse": 0.6823528409004211
+    },
+    {
+      "lead_hours": 42,
+      "mae": 0.5549510717391968,
+      "rmse": 0.7059233784675598,
+      "bias": -0.011292556300759315,
+      "persistence_rmse": 0.6955952644348145
+    },
+    {
+      "lead_hours": 48,
+      "mae": 0.5796215534210205,
+      "rmse": 0.7724589109420776,
+      "bias": 0.016836002469062805,
+      "persistence_rmse": 0.7595968842506409
+    },
+    {
+      "lead_hours": 54,
+      "mae": 0.4867632985115051,
+      "rmse": 0.6491319537162781,
+      "bias": 0.005808357149362564,
+      "persistence_rmse": 0.6344200968742371
+    },
+    {
+      "lead_hours": 60,
+      "mae": 0.3915431499481201,
+      "rmse": 0.5191425085067749,
+      "bias": -0.005361216142773628,
+      "persistence_rmse": 0.5021260976791382
+    },
+    {
+      "lead_hours": 66,
+      "mae": 0.3536524772644043,
+      "rmse": 0.4521495997905731,
+      "bias": -0.0029422976076602936,
+      "persistence_rmse": 0.43055105209350586
+    },
+    {
+      "lead_hours": 72,
+      "mae": 0.3493238091468811,
+      "rmse": 0.4242393970489502,
+      "bias": 0.012360062450170517,
+      "persistence_rmse": 0.3905121684074402
+    },
+    {
+      "lead_hours": 78,
+      "mae": 0.3750006854534149,
+      "rmse": 0.4548983573913574,
+      "bias": -0.00866658054292202,
+      "persistence_rmse": 0.4167465567588806
+    },
+    {
+      "lead_hours": 84,
+      "mae": 0.4085741639137268,
+      "rmse": 0.514377236366272,
+      "bias": -0.003305260092020035,
+      "persistence_rmse": 0.4740161597728729
+    },
+    {
+      "lead_hours": 90,
+      "mae": 0.5035665035247803,
+      "rmse": 0.624549150466919,
+      "bias": 0.004453733563423157,
+      "persistence_rmse": 0.5805537104606628
+    },
+    {
+      "lead_hours": 96,
+      "mae": 0.6064712405204773,
+      "rmse": 0.743357241153717,
+      "bias": 0.0016061905771493912,
+      "persistence_rmse": 0.7099010944366455
+    },
+    {
+      "lead_hours": 102,
+      "mae": 0.7368857264518738,
+      "rmse": 0.8769087791442871,
+      "bias": 0.011305686086416245,
+      "persistence_rmse": 0.8420771360397339
+    },
+    {
+      "lead_hours": 108,
+      "mae": 0.8627126812934875,
+      "rmse": 1.0193655490875244,
+      "bias": 0.01174997165799141,
+      "persistence_rmse": 0.9834702610969543
+    },
+    {
+      "lead_hours": 114,
+      "mae": 0.974852442741394,
+      "rmse": 1.1473932266235352,
+      "bias": 0.01976100541651249,
+      "persistence_rmse": 1.1030728816986084
+    },
+    {
+      "lead_hours": 120,
+      "mae": 1.0895562171936035,
+      "rmse": 1.266745686531067,
+      "bias": 0.03620893508195877,
+      "persistence_rmse": 1.2202435731887817
+    }
+  ],
+  "moe_mode": "local",
+  "probabilistic_score_estimator": "empirical (diagonal pairs included), not training fair estimator",
+  "stage": "joint",
+  "rank_histogram_counts": [
+    2211,
+    390,
+    344,
+    2175
+  ],
+  "rank_histogram_contract": "pooled scalar coordinates/leads; randomized ties; correlated samples",
+  "temporal_overall": {
+    "loss_trajectory": 1.0890435576438904,
+    "loss_delta": 0.9992838799953461,
+    "loss_delta_member": 1.0049317479133606,
+    "delta_member_variance_penalty": 0.005647914716973901,
+    "increment_spread": 0.05428614467382431,
+    "trajectory_edges": 20.0,
+    "state_mse_msl": 0.4669196605682373,
+    "state_mse_t2m": 0.4450696110725403,
+    "state_mse_u10": 0.4406581372022629,
+    "state_mse_v10": 0.6128877699375153,
+    "tendency_mse_msl": 0.973560243844986,
+    "tendency_mse_t2m": 0.962215393781662,
+    "tendency_mse_u10": 1.0020149052143097,
+    "tendency_mse_v10": 1.0593447983264923,
+    "loss_wind_speed": 0.3002261519432068,
+    "loss_wind_direction": 0.6025614738464355,
+    "wind_direction_valid_fraction": 0.9970238208770752
+  },
+  "temporal_estimator": "fair off-diagonal Energy, full physical horizon including observed origin"
+}
