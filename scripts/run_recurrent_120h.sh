@@ -20,6 +20,11 @@ temporal=(--ensemble-size "$members" --sampled-leads 2 --integration-steps "$ste
   --trajectory-weight 0.1 --delta-weight 0.02 --delta-member-weight 0.001
   --wind-speed-weight 0.01 --wind-direction-weight 0.005 --temporal-warmup-epochs 5
   --trajectory-selection-weight 0.1 --log-gradient-norms)
+temporal_c=(--ensemble-size "$members" --sampled-leads 2 --integration-steps "$steps"
+  --trajectory-edges "$edges" --validation-trajectory-edges 0
+  --trajectory-weight 0.10 --delta-weight 0.02 --delta-member-weight 0.0
+  --wind-speed-weight 0.01 --wind-direction-weight 0.005 --temporal-warmup-epochs 3
+  --trajectory-selection-weight 0.1 --log-gradient-norms)
 common=(--archive "$TEMPORAL_ARCHIVE" --batch-size "$batch" --window-stride 4
   --learning-rate 0.001 --weight-decay 0.0001 --seed 7 --device "$device")
 case "$phase" in
@@ -54,7 +59,7 @@ case "$phase" in
       2>&1 | tee "$TEMPORAL_RUN/b.console.log"
     ;;
   C)
-    train-climate-manifold-moe "${common[@]}" "${temporal[@]}" --output "$TEMPORAL_RUN/c.pt" \
+    train-climate-manifold-moe "${common[@]}" "${temporal_c[@]}" --output "$TEMPORAL_RUN/c.pt" \
       --stage joint --init-checkpoint "$TEMPORAL_RUN/b.pt" --joint-epochs "${TEMPORAL_C_EPOCHS:-10}" \
       --joint-lr-factor 0.1 --encoder-lr-factor 0.1 --early-stop-patience 5 \
       2>&1 | tee "$TEMPORAL_RUN/c.console.log"

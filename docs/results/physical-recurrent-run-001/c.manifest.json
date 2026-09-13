@@ -1,0 +1,8 @@
+{
+  "format": "climate_diffusion.artifact.v2",
+  "checkpoint": "c.pt",
+  "checkpoint_sha256": "8a6df2f125344ee6050d469c6f1471adbfb99f815661d732a1cf0370d55d61b8",
+  "forecast_step_hours": 6,
+  "metadata": "c.metadata.json",
+  "metrics": "c.metrics.json"
+}

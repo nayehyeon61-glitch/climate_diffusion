@@ -1,0 +1,8 @@
+stage=joint epoch=0001 loss=4.57207 val=1.36219
+stage=joint epoch=0002 loss=3.57119 val=1.35516
+stage=joint epoch=0003 loss=3.52237 val=1.35897
+stage=joint epoch=0004 loss=3.46378 val=1.36012
+stage=joint epoch=0005 loss=3.41598 val=1.35765
+stage=joint epoch=0006 loss=3.38412 val=1.35963
+stage=joint epoch=0007 loss=3.33299 val=1.35999
+/workspace/experiments/physical-recurrent-run-001/c.pt

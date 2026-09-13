@@ -1,0 +1,16 @@
+stage=manifold epoch=0001 loss=0.67829 val=0.63174
+stage=manifold epoch=0002 loss=0.57153 val=0.60092
+stage=manifold epoch=0003 loss=0.55085 val=0.58442
+stage=manifold epoch=0004 loss=0.54099 val=0.58277
+stage=manifold epoch=0005 loss=0.53476 val=0.58071
+stage=manifold epoch=0006 loss=0.52979 val=0.57040
+stage=manifold epoch=0007 loss=0.52591 val=0.56922
+stage=manifold epoch=0008 loss=0.52280 val=0.57272
+stage=manifold epoch=0009 loss=0.52020 val=0.57381
+stage=manifold epoch=0010 loss=0.51797 val=0.57130
+stage=manifold epoch=0011 loss=0.51608 val=0.57521
+stage=manifold epoch=0012 loss=0.51412 val=0.57453
+stage=manifold epoch=0013 loss=0.51254 val=0.57432
+stage=manifold epoch=0014 loss=0.51126 val=0.57321
+stage=manifold epoch=0015 loss=0.50981 val=0.57936
+/workspace/experiments/physical-recurrent-run-001/a.pt

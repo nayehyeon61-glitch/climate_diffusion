@@ -13,3 +13,5 @@ outputs/
 download/*
 !download/flow-matching/
 !download/flow-matching/**/*.pt
+!docs/results/**/*.pt
+!docs/results/**/*.npz
