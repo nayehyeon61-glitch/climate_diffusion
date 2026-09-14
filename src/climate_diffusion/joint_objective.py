@@ -20,6 +20,7 @@ class LossProfile:
     fused_fm: float
     expert_fm: float = 1.0
     state_crps: float = 0.0
+    state_energy: float = 0.0
     transition_crps: float = 0.0
     trajectory_energy: float = 0.0
     mean_state: float = 0.0
@@ -36,8 +37,7 @@ class LossProfile:
 
 
 LOSS_PROFILES = {
-    "ab_control": LossProfile(fused_fm=1.0, state_crps=.5,
-        trajectory_energy=.1, mean_tendency=.02),
+    "ab_control": LossProfile(fused_fm=1.0, state_crps=.5, state_energy=.5,\n        trajectory_energy=.1, mean_tendency=.02),
     "v2_minimal": LossProfile(fused_fm=1.0, transition_crps=.25,
         trajectory_energy=.3, mean_tendency=.02, ae_delta=.05,
         decoded_drift=.05),
@@ -171,7 +171,7 @@ def trajectory_scores(samples: torch.Tensor, truth: torch.Tensor,
 def weighted_v2(components: Mapping[str,torch.Tensor],
                 selected: LossProfile) -> tuple[torch.Tensor,dict[str,torch.Tensor]]:
     names = {"fm":"fused_fm", "expert_fm":"expert_fm",
-             "state_crps":"state_crps", "transition_crps":"transition_crps",
+             "state_crps":"state_crps", "energy":"state_energy", "transition_crps":"transition_crps",
              "trajectory_energy":"trajectory_energy", "mean_state":"mean_state",
              "mean_tendency":"mean_tendency",
              "spread_skill_calibration":"calibration",
