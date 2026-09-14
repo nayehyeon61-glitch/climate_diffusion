@@ -295,8 +295,9 @@ def train_manifold_moe(archive_path, output_path, *, stage="all", init_checkpoin
         raise ValueError("output must end with .pt")
     if init_checkpoint and output.resolve() == Path(init_checkpoint).resolve():
         raise ValueError("Do not overwrite the previous-stage checkpoint")
-    candidates = [output] if stage != "all" else [output, output.with_name(output.stem+".manifold.pt"),
-                                                   output.with_name(output.stem+".specialize.pt")]
+    candidates = ([output] if stage not in {"all","ab_all"} else
+                  [output,output.with_name(output.stem+".manifold.pt"),
+                   output.with_name(output.stem+(".specialize.pt" if stage=="all" else ".joint_ab.pt"))])
     artifacts = [q for p in candidates for q in (p, p.with_suffix(".metrics.json"),
                   p.with_suffix(".metadata.json"), p.with_suffix(".manifest.json"))]
     if any(p.exists() for p in artifacts):
@@ -467,7 +468,9 @@ def train_manifold_moe(archive_path, output_path, *, stage="all", init_checkpoin
                 stale = 0
                 selected = {**phase_metadata, "best_epoch": epoch, "best_selection_score": best,
                             "selection_metric": "pi_validation_loss" if phase == "manifold" else
-                            "energy_plus_crps_plus_fixed_weight_trajectory_when_enabled"}
+                            ("fixed_state_energy_plus_state_crps_plus_transition_crps_plus_.1_trajectory_energy"
+                             if phase=="joint_ab" else
+                             "energy_plus_crps_plus_fixed_weight_trajectory_when_enabled")}
                 _save(phase_output, model, schema, mean, scale, selected, rows)
             else:
                 stale += 1
