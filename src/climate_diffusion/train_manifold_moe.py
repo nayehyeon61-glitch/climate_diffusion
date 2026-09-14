@@ -169,7 +169,7 @@ def _epoch(model, loader, device, generator, optimizer, options, *, temporal=Non
                     metrics.update({"pi_"+k:v for k,v in auxiliary.items()})
                     metrics["anchor"] = anchor
                     geometry = metrics["loss"]-metrics["fm"]-metrics["expert_fm"]
-                    objective, weighted = weighted_v2(metrics,options["loss_profile_config"])
+                    objective, weighted = weighted_v2(metrics,loss_profile_config(options["loss_profile"]))
                     metrics.update(weighted)
                     metrics["loss"] = (geometry+objective+options["joint_pi_weight"]*auxiliary["loss"]
                                        +options["anchor_weight"]*anchor)
@@ -229,7 +229,7 @@ def train_manifold_moe(archive_path, output_path, *, stage="all", init_checkpoin
     options = {k: v for k, v in locals().items() if k.endswith("_weight")}
     options.update(ensemble_size=ensemble_size, integration_steps=integration_steps, sampled_leads=sampled_leads)
     options.update(trajectory_edges=trajectory_edges, validation_trajectory_edges=validation_trajectory_edges,
-                   loss_profile=loss_profile, loss_profile_config=loss_profile_config(loss_profile),
+                   loss_profile=loss_profile,
                    temporal_warmup_epochs=temporal_warmup_epochs, log_gradient_norms=log_gradient_norms,
                    a_tendency_quality_threshold=a_tendency_quality_threshold)
     if min(trajectory_edges, validation_trajectory_edges, temporal_warmup_epochs, early_stop_patience) < 0:
