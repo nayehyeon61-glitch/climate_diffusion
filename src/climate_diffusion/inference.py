@@ -17,6 +17,7 @@ from .dynamics import DynamicsModelConfig, LatentDynamicsFlow
 from .moe import MOE_FORMAT, FlowMatchingMoE, MoEConfig
 from .moe_data import load_moe_archive
 from .manifold_moe import MANIFOLD_FORMAT, RECURRENT_FORMAT, ManifoldMoE, ManifoldMoEConfig
+from .joint_objective import JOINT_CHECKPOINT_FORMAT
 
 
 class LatentFlowForecaster:
@@ -40,12 +41,13 @@ class LatentFlowForecaster:
             MOE_FORMAT,
             MANIFOLD_FORMAT,
             RECURRENT_FORMAT,
+            JOINT_CHECKPOINT_FORMAT,
         }:
             raise ValueError("Unsupported climate flow checkpoint format")
-        self.is_manifold = payload["format"] in {MANIFOLD_FORMAT, RECURRENT_FORMAT}
+        self.is_manifold = payload["format"] in {MANIFOLD_FORMAT, RECURRENT_FORMAT, JOINT_CHECKPOINT_FORMAT}
         if self.is_manifold:
             recurrent = payload["model_config"].get("forecast_dynamics","lead_conditioned") == "recurrent_residual"
-            if recurrent != (payload["format"] == RECURRENT_FORMAT):
+            if recurrent != (payload["format"] in {RECURRENT_FORMAT, JOINT_CHECKPOINT_FORMAT}):
                 raise ValueError("Checkpoint format/dynamics mismatch; do not reinterpret old weights as recurrent")
         self.is_moe = self.is_manifold or payload["format"] == MOE_FORMAT
         # is_dynamics denotes the bounded, strided, multi-lead temporal contract.
