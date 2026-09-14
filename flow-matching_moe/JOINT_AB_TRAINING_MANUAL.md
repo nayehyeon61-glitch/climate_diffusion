@@ -50,7 +50,7 @@ reward.
 
 Profiles:
 
-- `ab_control`: state CRPS .5, trajectory Energy .1, mean tendency .02.
+- `ab_control`: state Energy .5, state CRPS .5, joint trajectory Energy .1, mean tendency .02.
 - `v2_minimal`: FM 1, transition CRPS .25, trajectory Energy .3, mean
   tendency .02.
 - `v2_full`: FM .3, state CRPS 1, transition CRPS .75, trajectory Energy
