@@ -37,7 +37,8 @@ class LossProfile:
 
 
 LOSS_PROFILES = {
-    "ab_control": LossProfile(fused_fm=1.0, state_crps=.5, state_energy=.5,\n        trajectory_energy=.1, mean_tendency=.02),
+    "ab_control": LossProfile(fused_fm=1.0, state_crps=.5, state_energy=.5,
+        trajectory_energy=.1, mean_tendency=.02),
     "v2_minimal": LossProfile(fused_fm=1.0, transition_crps=.25,
         trajectory_energy=.3, mean_tendency=.02, ae_delta=.05,
         decoded_drift=.05),
@@ -145,7 +146,8 @@ def trajectory_scores(samples: torch.Tensor, truth: torch.Tensor,
         feature_weight = metric.to(samples).sqrt().reshape(1,1,-1).expand_as(truth)
     state_feature = (future*feature_weight[:,None,1:,:]/math.sqrt(future.shape[2])).flatten(2)
     truth_state = (target_future*feature_weight[:,1:]/math.sqrt(future.shape[2])).flatten(1)
-    tendency_feature = (tendency*feature_weight[:,None,1:,:]\n                        /math.sqrt(tendency.shape[2])).flatten(2)
+    tendency_feature = (tendency*feature_weight[:,None,1:,:]
+                        /math.sqrt(tendency.shape[2])).flatten(2)
     truth_tendency = (true_tendency*feature_weight[:,:-1]
                       /math.sqrt(tendency.shape[2])).flatten(1)
     trajectory_energy = fair_energy(
