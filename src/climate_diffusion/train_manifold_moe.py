@@ -331,6 +331,8 @@ def train_manifold_moe(archive_path, output_path, *, stage="all", init_checkpoin
             raise ValueError(f"{stage} requires a specialize-stage or joint_ab-stage checkpoint"
                              if stage=="joint" else f"{stage} requires a manifold-stage checkpoint")
         initial = torch.load(init_checkpoint, map_location="cpu", weights_only=False)
+        if stage=="joint" and initial["training"]["stage"]=="joint_ab" and delta_member_weight != 0:
+            raise ValueError("C following joint_ab forbids member-wise delta MSE")
         config = ManifoldMoEConfig(**initial["model_config"])
         if any(getattr(config, k) != v for k, v in (model_options or {}).items()):
             raise ValueError("Model options conflict with the previous checkpoint")
