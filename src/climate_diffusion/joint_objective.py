@@ -144,10 +144,9 @@ def trajectory_scores(samples: torch.Tensor, truth: torch.Tensor,
     feature_weight = torch.ones_like(truth)
     if metric is not None:
         feature_weight = metric.to(samples).sqrt().reshape(1,1,-1).expand_as(truth)
-    state_feature = (future*feature_weight[:,None,:, :]/math.sqrt(future.shape[2])).flatten(2)
+    state_feature = (future*feature_weight[:,None,1:,:]/math.sqrt(future.shape[2])).flatten(2)
     truth_state = (target_future*feature_weight[:,1:]/math.sqrt(future.shape[2])).flatten(1)
-    tendency_feature = (tendency*feature_weight[:,:-1,None,:].transpose(1,2)
-                        /math.sqrt(tendency.shape[2])).flatten(2)
+    tendency_feature = (tendency*feature_weight[:,None,1:,:]\n                        /math.sqrt(tendency.shape[2])).flatten(2)
     truth_tendency = (true_tendency*feature_weight[:,:-1]
                       /math.sqrt(tendency.shape[2])).flatten(1)
     trajectory_energy = fair_energy(
