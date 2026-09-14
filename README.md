@@ -20,8 +20,11 @@ B 전문화(`stage_b.pt`) → C ensemble 보정(`final.pt`) → validation 시�
 
 RunPod 명령, 각 단계의 입력/출력, 기존 checkpoint에서 시작할 위치, 중단 시 재실행 방법을
 함께 적었습니다. 연속 lead를 함께 뽑는 B/C 예시는 `--sampled-leads 2`를 사용합니다.
-현재 시간 변화율 **진단**은 구현되어 있지만, `Δstate/Δtime`을 직접 학습하는 별도
-trajectory loss가 추가된 것은 아닙니다. 코드 갱신만으로 기존 weight가 보정되지는 않습니다.
+기존 frozen B→C 경로는 비교·구버전 checkpoint 호환용으로 유지됩니다. 이
+`feature/joint-ab-loss-v2` 경로에는 A+B 공동학습과 full recurrent trajectory graph의
+state/transition CRPS 및 endpoint+increment Energy가 구현되어 있습니다. 새 weight를
+기존 checkpoint에 자동 적용하지 않으므로 [Joint A+B manual](flow-matching_moe/JOINT_AB_TRAINING_MANUAL.md)의
+새 output 경로에서 재학습해야 합니다.
 
 ## 최종 추가: Physics-informed Manifold MoE Ensemble
 
