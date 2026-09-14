@@ -160,10 +160,17 @@ def evaluate_flow_checkpoint(
                 paths = np.concatenate((np.broadcast_to(origin,(ensemble_size,1,len(origin))),normalized_samples),1)
                 observed = np.concatenate((origin[None],normalized_target),0)
                 with torch.no_grad():
-                    tm = temporal(torch.tensor(paths[None],dtype=torch.float32),
-                                  torch.tensor(observed[None],dtype=torch.float32),
-                                  torch.full((1,horizon),float(forecaster.forecast_step_hours)))
+                    sample_tensor=torch.tensor(paths[None],dtype=torch.float32)
+                    truth_tensor=torch.tensor(observed[None],dtype=torch.float32)
+                    actual_dt=torch.full((1,horizon),float(forecaster.forecast_step_hours))
+                    tm = temporal(sample_tensor,truth_tensor,actual_dt)
+                    from .joint_objective import trajectory_scores
+                    v2 = trajectory_scores(sample_tensor,truth_tensor,actual_dt,
+                        temporal.tendency_scale.flatten(),temporal.metric.flatten())
                 case_metrics["temporal"] = {k:float(v) for k,v in tm.items()}
+                case_metrics["state_crps"] = float(v2["state_crps"])
+                case_metrics["transition_crps"] = float(v2["transition_crps"])
+                case_metrics["trajectory_energy_v2"] = float(v2["trajectory_energy"])
             case_metrics["coverage"] = {str(level):_coverage(normalized_samples,normalized_target,level)
                                         for level in (0.5,0.8,0.9)}
             case_metrics["coverage_80"] = case_metrics["coverage"]["0.8"]
@@ -269,7 +276,11 @@ def evaluate_flow_checkpoint(
         if temporal is not None:
             result["temporal_overall"] = {k:float(np.mean([row["temporal"][k] for row in case_rows]))
                                            for k in case_rows[0]["temporal"]}
-            result["temporal_estimator"] = "fair off-diagonal Energy, full physical horizon including observed origin"
+            result["normalized_overall"]["state_crps_v2"] = float(np.mean([row["state_crps"] for row in case_rows]))
+            result["normalized_overall"]["transition_crps_v2"] = float(np.mean([row["transition_crps"] for row in case_rows]))
+            result["normalized_overall"]["trajectory_energy_v2"] = float(np.mean([row["trajectory_energy_v2"] for row in case_rows]))
+            result["temporal_estimator"] = ("same saved recurrent trajectory; known origin excluded from state CRPS; "
+                "same-member increments divided by actual dt_hours and train-only tendency scale; fair M(M-1)")
         result["coverage_contract"] = ("central empirical quantiles from finite M; pooled correlated grid/time "
                                        "coordinates are diagnostics, not independent coverage trials")
     output = Path(output_path)
