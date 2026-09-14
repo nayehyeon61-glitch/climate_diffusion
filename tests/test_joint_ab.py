@@ -68,3 +68,33 @@ def test_profiles_disable_member_mse_and_are_finite():
     assert "delta_member" not in weighted
     with pytest.raises(ValueError):
         profile("unknown")
+
+
+def test_joint_ab_checkpoint_roundtrip_and_all_modules_update(archive,tmp_path):
+    from climate_diffusion.train_manifold_moe import train_manifold_moe
+    from climate_diffusion.inference import LatentFlowForecaster
+    from climate_diffusion.joint_objective import JOINT_CHECKPOINT_FORMAT
+    archive_path,_=archive
+    options={"forecast_dynamics":"recurrent_residual","manifold_dim":3,
+             "history_steps":3,"history_stride":1,"horizon_steps":3,
+             "num_experts":2,"hidden_dim":12,"context_dim":4,
+             "gate_hidden_dim":8,"expert_latent_dim":6}
+    a=train_manifold_moe(archive_path,tmp_path/"a.pt",stage="manifold",
+        model_options=options,manifold_epochs=1,batch_size=4,window_stride=8,
+        ensemble_size=2,integration_steps=1,max_validation_windows=2,device="cpu",
+        ae_delta_weight=.01,finite_step_drift_weight=.01)
+    before=torch.load(a,weights_only=False)["model"]
+    ab=train_manifold_moe(archive_path,tmp_path/"ab.pt",stage="joint_ab",
+        init_checkpoint=a,joint_ab_epochs=1,batch_size=4,window_stride=8,
+        ensemble_size=2,integration_steps=1,max_validation_windows=2,device="cpu",
+        trajectory_edges=0,loss_profile="v2_minimal")
+    payload=torch.load(ab,weights_only=False)
+    assert payload["format"]==JOINT_CHECKPOINT_FORMAT
+    assert payload["training"]["stage"]=="joint_ab"
+    loaded=LatentFlowForecaster(ab,device="cpu")
+    assert loaded.model.stage=="joint_ab"
+    groups=("manifold.encoder","manifold.decoder","manifold.latent_drift",
+            "experts","gate.correction","history_encoder")
+    for prefix in groups:
+        assert any(not torch.equal(value,before[name]) for name,value in payload["model"].items()
+                   if name.startswith(prefix) and name in before)
