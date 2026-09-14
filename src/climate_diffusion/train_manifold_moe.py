@@ -314,7 +314,8 @@ def train_manifold_moe(archive_path, output_path, *, stage="all", init_checkpoin
         loaded = LatentFlowForecaster(init_checkpoint, device="cpu")
         required = "manifold" if stage in {"specialize","joint_ab"} else ("specialize","joint_ab")
         if not loaded.is_manifold or loaded.model.stage not in ((required,) if isinstance(required,str) else required):
-            raise ValueError(f"{stage} requires preceding stage {required}")
+            raise ValueError(f"{stage} requires a specialize-stage or joint_ab-stage checkpoint"
+                             if stage=="joint" else f"{stage} requires a manifold-stage checkpoint")
         initial = torch.load(init_checkpoint, map_location="cpu", weights_only=False)
         config = ManifoldMoEConfig(**initial["model_config"])
         if any(getattr(config, k) != v for k, v in (model_options or {}).items()):
