@@ -1,7 +1,6 @@
 import math
 import pytest
-import torch
-
+import torch\n\nfrom test_manifold_moe import archive\n
 from climate_diffusion.joint_objective import (
     fair_crps, fair_energy, normalized_tendencies, profile,
     trajectory_scores, weighted_v2,
