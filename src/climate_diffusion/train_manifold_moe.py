@@ -13,6 +13,9 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from .manifold_moe import MANIFOLD_FORMAT, RECURRENT_FORMAT, ManifoldMoE, ManifoldMoEConfig
 from .moe import ensemble_scores
+from .joint_objective import (JOINT_CHECKPOINT_FORMAT, fixed_validation_score,
+                              profile as loss_profile_config, trajectory_scores,
+                              weighted_v2)
 from .moe_data import build_moe_split, field_grid, load_moe_archive, validate_moe_split
 from .train import _sha256
 from .temporal_supervision import (TemporalWindowDataset, TemporalObjective, NonSingletonBatchSampler,
@@ -24,7 +27,8 @@ def _json(path, value):
 
 
 def _save(path, model, schema, mean, scale, training, rows):
-    checkpoint_format = RECURRENT_FORMAT if model.config.forecast_dynamics == "recurrent_residual" else MANIFOLD_FORMAT
+    checkpoint_format = (JOINT_CHECKPOINT_FORMAT if model.stage == "joint_ab" else
+        RECURRENT_FORMAT if model.config.forecast_dynamics == "recurrent_residual" else MANIFOLD_FORMAT)
     payload = {"format": checkpoint_format, "model_config": asdict(model.config),
                "model": model.state_dict(), "schema": schema,
                "state_mean": torch.as_tensor(mean), "state_scale": torch.as_tensor(scale),
@@ -126,7 +130,7 @@ def _epoch(model, loader, device, generator, optimizer, options, *, temporal=Non
                     tau_generator=streams["tau"], return_steps=True, return_physical=True)
                 metrics = model.specialization_loss(q, velocity, tau, context, lead,
                                                     physical_q=physical_q, **specialist_options)
-                if model.stage == "joint" or not training:
+                if model.stage == "joint" or (not training and model.stage != "joint_ab"):
                     samples = _sample(model, context, lead_steps, options["ensemble_size"],
                                       options["integration_steps"], streams["ensemble"], origin=batch["origin"])
                     metrics.update(ensemble_scores(samples, target))
@@ -146,7 +150,33 @@ def _epoch(model, loader, device, generator, optimizer, options, *, temporal=Non
                                        + options["crps_weight"] * metrics["crps"]
                                        + options["joint_pi_weight"] * auxiliary["loss"]
                                        + options["anchor_weight"] * anchor + 0.01 * metrics["spread_guard"])
-                if temporal is not None and temporal_active:
+                if model.stage == "joint_ab":
+                    if options["delta_member_weight"] != 0:
+                        raise ValueError("New joint_ab training forbids member-wise delta MSE")
+                    truth, steps, dt, mask = select_block(batch, options["trajectory_edges"], streams["block"])
+                    generated = model.sample_trajectory(model.encode_history(batch["history"]), steps,
+                        ensemble_size=options["ensemble_size"], integration_steps=options["integration_steps"],
+                        generator=streams["trajectory_ensemble"], origin=batch["origin"])
+                    score_components = trajectory_scores(
+                        generated, truth, dt, temporal.tendency_scale.flatten(), temporal.metric.flatten())
+                    metrics.update(score_components)
+                    future = generated[:,:,1:].permute(0,2,1,3).reshape(-1,options["ensemble_size"],generated.shape[-1])
+                    future_truth = truth[:,1:].reshape(-1,truth.shape[-1])
+                    metrics.update(ensemble_scores(future,future_truth))
+                    auxiliary = model.manifold_loss(batch["origin"],batch["targets"][:,0],**pi_options)
+                    anchor_states = torch.cat((batch["origin"],batch["targets"].reshape(-1,batch["targets"].shape[-1])),0)
+                    anchor = (model.encode(anchor_states)-model.reference_encode(anchor_states).detach()).square().mean()
+                    metrics.update({"pi_"+k:v for k,v in auxiliary.items()})
+                    metrics["anchor"] = anchor
+                    geometry = metrics["loss"]-metrics["fm"]-metrics["expert_fm"]
+                    objective, weighted = weighted_v2(metrics,options["loss_profile_config"])
+                    metrics.update(weighted)
+                    metrics["loss"] = (geometry+objective+options["joint_pi_weight"]*auxiliary["loss"]
+                                       +options["anchor_weight"]*anchor)
+                    spread=generated[:,:,1:].std(1,unbiased=False)
+                    metrics["ensemble_spread"]=spread.mean()
+                    metrics["forecast_rmse"]=(generated[:,:,1:].mean(1)-truth[:,1:]).square().mean().sqrt()
+                if temporal is not None and temporal_active and model.stage != "joint_ab":
                     edges = options["trajectory_edges"] if training else options["validation_trajectory_edges"]
                     truth, steps, dt, mask = select_block(batch, edges, streams["block"])
                     generated = model.sample_trajectory(model.encode_history(batch["history"]), steps,
@@ -194,10 +224,12 @@ def train_manifold_moe(archive_path, output_path, *, stage="all", init_checkpoin
                        validation_trajectory_edges=0, temporal_warmup_epochs=3,
                        trajectory_selection_weight=0.1, variable_weights=None, log_gradient_norms=False,
                        weight_decay=0.0, early_stop_patience=0, ae_delta_weight=0.0,
-                       finite_step_drift_weight=0.0, a_tendency_quality_threshold=None):
+                       finite_step_drift_weight=0.0, a_tendency_quality_threshold=None,
+                       loss_profile="v2_full", joint_ab_epochs=30, manifold_lr_factor=0.3):
     options = {k: v for k, v in locals().items() if k.endswith("_weight")}
     options.update(ensemble_size=ensemble_size, integration_steps=integration_steps, sampled_leads=sampled_leads)
     options.update(trajectory_edges=trajectory_edges, validation_trajectory_edges=validation_trajectory_edges,
+                   loss_profile=loss_profile, loss_profile_config=loss_profile_config(loss_profile),
                    temporal_warmup_epochs=temporal_warmup_epochs, log_gradient_norms=log_gradient_norms,
                    a_tendency_quality_threshold=a_tendency_quality_threshold)
     if min(trajectory_edges, validation_trajectory_edges, temporal_warmup_epochs, early_stop_patience) < 0:
@@ -211,17 +243,17 @@ def train_manifold_moe(archive_path, output_path, *, stage="all", init_checkpoin
         raise ValueError("Manifold metric requires batch_size >= 2")
     if max_validation_windows < 2:
         raise ValueError("Manifold metric requires max_validation_windows >= 2")
-    if stage not in {"all", "manifold", "specialize", "joint"}:
+    if stage not in {"all", "ab_all", "manifold", "specialize", "joint_ab", "joint"}:
         raise ValueError("Invalid stage")
-    if (stage in {"specialize", "joint"}) != (init_checkpoint is not None):
-        raise ValueError("Only Stage B/C require --init-checkpoint from the preceding stage")
+    if (stage in {"specialize", "joint_ab", "joint"}) != (init_checkpoint is not None):
+        raise ValueError("Standalone specialize/joint_ab/joint require --init-checkpoint")
     if min(manifold_epochs, expert_epochs, joint_epochs, batch_size, window_stride,
            integration_steps, sampled_leads, max_validation_windows) < 1 or ensemble_size < 2:
         raise ValueError("Positive counts and ensemble_size >= 2 are required")
-    for value in (learning_rate, joint_lr_factor, encoder_lr_factor):
+    for value in (learning_rate, joint_lr_factor, encoder_lr_factor, manifold_lr_factor):
         if not math.isfinite(value) or value <= 0:
             raise ValueError("Learning rates/factors must be finite and positive")
-    if joint_lr_factor > 1 or encoder_lr_factor >= 1:
+    if joint_lr_factor > 1 or encoder_lr_factor >= 1 or manifold_lr_factor > 1:
         raise ValueError("Stage C must not raise LR; encoder_lr_factor must be below 1")
     if any(not math.isfinite(v) or v < 0 for k, v in options.items() if k.endswith("_weight")):
         raise ValueError("Loss weights must be finite and nonnegative")
@@ -250,9 +282,9 @@ def train_manifold_moe(archive_path, output_path, *, stage="all", init_checkpoin
     if init_checkpoint:
         from .inference import LatentFlowForecaster
         loaded = LatentFlowForecaster(init_checkpoint, device="cpu")
-        required = "manifold" if stage == "specialize" else "specialize"
-        if not loaded.is_manifold or loaded.model.stage != required:
-            raise ValueError(f"{stage} requires a {required}-stage manifold checkpoint")
+        required = "manifold" if stage in {"specialize","joint_ab"} else ("specialize","joint_ab")
+        if not loaded.is_manifold or loaded.model.stage not in ((required,) if isinstance(required,str) else required):
+            raise ValueError(f"{stage} requires preceding stage {required}")
         initial = torch.load(init_checkpoint, map_location="cpu", weights_only=False)
         config = ManifoldMoEConfig(**initial["model_config"])
         if any(getattr(config, k) != v for k, v in (model_options or {}).items()):
@@ -321,7 +353,8 @@ def train_manifold_moe(archive_path, output_path, *, stage="all", init_checkpoin
             origin_decode_contract="origin + decode(q_j) - decode(q_origin); fixed chart offset",
             training_trajectory_contract="full recurrent BPTT; full-window score" if trajectory_edges==0 else
                 "full prefix BPTT; score contiguous sub-block (NOT full-window score)")
-    phases = ("manifold", "specialize", "joint") if stage == "all" else (stage,)
+    phases = (("manifold","joint_ab","joint") if stage == "ab_all" else
+              ("manifold","specialize","joint") if stage == "all" else (stage,))
     rows = []
     previous = Path(init_checkpoint) if init_checkpoint else None
     for phase in phases:
@@ -351,15 +384,20 @@ def train_manifold_moe(archive_path, output_path, *, stage="all", init_checkpoin
                                    shuffle=True, generator=torch.Generator().manual_seed(seed)))
         val_loader = DataLoader(val_data, batch_sampler=NonSingletonBatchSampler(len(val_data), batch_size))
         rate = learning_rate * (joint_lr_factor if phase == "joint" else 1)
-        if phase == "joint":
+        if phase == "joint_ab":
+            groups = [{"params": model.manifold.parameters(), "lr": rate*manifold_lr_factor},
+                      {"params": list(model.experts.parameters())+list(model.gate.parameters())
+                                  +list(model.history_encoder.parameters()), "lr":rate}]
+        elif phase == "joint":
             groups = [{"params": model.manifold.parameters(), "lr": rate * encoder_lr_factor},
                       {"params": list(model.experts.parameters()) + list(model.gate.parameters())
                                   + list(model.history_encoder.parameters()), "lr": rate}]
         else:
             groups = [{"params": [p for p in model.parameters() if p.requires_grad], "lr": rate}]
         optimizer = torch.optim.AdamW(groups, weight_decay=weight_decay)
-        epochs = {"manifold": manifold_epochs, "specialize": expert_epochs, "joint": joint_epochs}[phase]
-        phase_output = output if stage != "all" or phase == "joint" else output.with_name(output.stem + f".{phase}.pt")
+        epochs = {"manifold":manifold_epochs,"specialize":expert_epochs,"joint_ab":joint_ab_epochs,"joint":joint_epochs}[phase]
+        terminal = "joint" if stage in {"all","ab_all"} else stage
+        phase_output = output if phase == terminal else output.with_name(output.stem+f".{phase}.pt")
         best = float("inf")
         training_generator = torch.Generator(device=device).manual_seed(seed)
         def rngs(offset):
@@ -377,7 +415,9 @@ def train_manifold_moe(archive_path, output_path, *, stage="all", init_checkpoin
             validation = _epoch(model, val_loader, device,
                                 torch.Generator(device=device).manual_seed(seed + 10000), None, options,
                                 temporal=temporal, streams=rngs(20000))
-            score = validation["loss"] if phase == "manifold" else validation["energy"] + validation["crps"]
+            score = (validation["loss"] if phase=="manifold" else
+                     float(fixed_validation_score(validation)) if phase=="joint_ab" else
+                     validation["energy"]+validation["crps"])
             if phase != "manifold" and "loss_trajectory" in validation:
                 score += trajectory_selection_weight * validation["loss_trajectory"]
             rows.append({"stage": phase, "epoch": epoch, "train": train_metrics,
@@ -421,7 +461,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", required=True)
     parser.add_argument("--output", default="outputs/manifold-moe/model.pt")
-    parser.add_argument("--stage", choices=("all", "manifold", "specialize", "joint"), default="all")
+    parser.add_argument("--stage", choices=("all","ab_all","manifold","specialize","joint_ab","joint"), default="all")
     parser.add_argument("--init-checkpoint")
     integer_model = ("history_steps", "history_stride", "horizon_steps", "num_experts", "manifold_dim",
                      "expert_latent_dim", "gate_hidden_dim", "hidden_dim", "context_dim")
@@ -447,6 +487,9 @@ def main(argv=None):
                           ("ae_delta_weight", 0.0), ("finite_step_drift_weight", 0.0)):
         parser.add_argument("--" + name.replace("_", "-"), type=float, default=default)
     parser.add_argument("--a-tendency-quality-threshold", type=float)
+    parser.add_argument("--loss-profile", choices=("ab_control","v2_minimal","v2_full"), default="v2_full")
+    parser.add_argument("--joint-ab-epochs", type=int, default=30)
+    parser.add_argument("--manifold-lr-factor", type=float, default=.3)
     parser.add_argument("--device")
     parser.add_argument("--forecast-dynamics", choices=("lead_conditioned","recurrent_residual"))
     parser.add_argument("--log-gradient-norms", action="store_true")
