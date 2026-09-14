@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from .manifold_moe import MANIFOLD_FORMAT, RECURRENT_FORMAT, ManifoldMoE, ManifoldMoEConfig
 from .moe import ensemble_scores
 from .joint_objective import (JOINT_CHECKPOINT_FORMAT, fixed_validation_score,
+                              module_gradient_diagnostics,
                               profile as loss_profile_config, trajectory_scores,
                               weighted_v2)
 from .moe_data import build_moe_split, field_grid, load_moe_archive, validate_moe_split
@@ -100,7 +101,7 @@ def _epoch(model, loader, device, generator, optimizer, options, *, temporal=Non
     specialist_options = {k: options[k] for k in ("gate_weight", "balance_weight", "diversity_weight",
                                                   "projection_weight", "entropy_weight")}
     with torch.set_grad_enabled(training):
-        for batch in loader:
+        for batch_index, batch in enumerate(loader):
             if model.stage == "manifold":
                 state, next_state = [v.to(device) for v in batch]
                 metrics = model.manifold_loss(state, next_state, **pi_options)
@@ -176,6 +177,24 @@ def _epoch(model, loader, device, generator, optimizer, options, *, temporal=Non
                     spread=generated[:,:,1:].std(1,unbiased=False)
                     metrics["ensemble_spread"]=spread.mean()
                     metrics["forecast_rmse"]=(generated[:,:,1:].mean(1)-truth[:,1:]).square().mean().sqrt()
+                    if training and options.get("log_gradient_norms") and batch_index == 0:
+                        groups={"encoder":model.manifold.encoder.parameters(),
+                                "decoder":model.manifold.decoder.parameters(),
+                                "drift":model.manifold.latent_drift.parameters(),
+                                "experts":model.experts.parameters(),
+                                "gate":model.gate.parameters(),
+                                "history":model.history_encoder.parameters()}
+                        raw={k:metrics[k] for k in ("fm","expert_fm","state_crps",
+                             "transition_crps","trajectory_energy","mean_state","mean_tendency")}
+                        diag=module_gradient_diagnostics(raw,groups)
+                        weighted_components={k[9:]:v for k,v in weighted.items()}
+                        diag.update({"weighted/"+k:v for k,v in
+                                     module_gradient_diagnostics(weighted_components,groups).items()})
+                        metrics.update({k:generated.new_tensor(v) for k,v in diag.items()})
+                        output_grad=torch.autograd.grad(objective,generated,retain_graph=True)[0]
+                        shaped=output_grad.reshape(-1,*temporal.grid)
+                        for k,name in enumerate(temporal.names):
+                            metrics["normalized_endpoint_grad_rms_"+name]=shaped[:,k].square().mean().sqrt()
                 if temporal is not None and temporal_active and model.stage != "joint_ab":
                     edges = options["trajectory_edges"] if training else options["validation_trajectory_edges"]
                     truth, steps, dt, mask = select_block(batch, edges, streams["block"])
