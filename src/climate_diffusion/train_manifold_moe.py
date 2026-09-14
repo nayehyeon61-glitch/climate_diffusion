@@ -4,6 +4,9 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import resource
+import subprocess
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -21,6 +24,13 @@ from .moe_data import build_moe_split, field_grid, load_moe_archive, validate_mo
 from .train import _sha256
 from .temporal_supervision import (TemporalWindowDataset, TemporalObjective, NonSingletonBatchSampler,
                                    fit_temporal_statistics, select_block)
+
+
+def _source_revision():
+    try:
+        return subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip()
+    except (OSError,subprocess.SubprocessError):
+        return "unavailable"
 
 
 def _json(path, value):
@@ -361,7 +371,9 @@ def train_manifold_moe(archive_path, output_path, *, stage="all", init_checkpoin
             "early_stop_patience": early_stop_patience, "batch_contract": "merge final singleton; peak batch_size+1",
             "rng_contract": "separate FM source/tau/lead/block/marginal-ensemble/trajectory-ensemble/shuffle streams.v1",
             "training_trajectory_contract": "full window" if trajectory_edges == 0 else "contiguous sub-block",
-            "parameter_count": sum(p.numel() for p in model.parameters())}
+            "parameter_count": sum(p.numel() for p in model.parameters()),
+            "source_commit": _source_revision(),
+            "continuation_contract": "best weights reload; fresh optimizer per invocation; not bitwise resume"}
     if config.forecast_dynamics == "recurrent_residual":
         base.update(sampling_contract="physical_recurrent_residual_fm.v1; persistent member source; origin-anchored chart",
             training_lead_sampling="teacher-forced adjacent physical transitions for residual FM only",
@@ -428,6 +440,9 @@ def train_manifold_moe(archive_path, output_path, *, stage="all", init_checkpoin
                           "train_window_count": len(train_indices), "validation_indices": val_indices,
                           "previous_checkpoint_sha256": _sha256(previous) if previous else None}
         for epoch in range(1, epochs + 1):
+            started=time.perf_counter()
+            if device.type=="cuda":
+                torch.cuda.reset_peak_memory_stats(device)
             current_options = {**options, "temporal_ramp": min(1., epoch/max(1,temporal_warmup_epochs))}
             train_metrics = _epoch(model, train_loader, device, training_generator, optimizer, current_options,
                                    temporal=temporal, streams=training_streams)
@@ -439,8 +454,13 @@ def train_manifold_moe(archive_path, output_path, *, stage="all", init_checkpoin
                      validation["energy"]+validation["crps"])
             if phase != "manifold" and "loss_trajectory" in validation:
                 score += trajectory_selection_weight * validation["loss_trajectory"]
-            rows.append({"stage": phase, "epoch": epoch, "train": train_metrics,
-                         "validation": validation, "selection_score": score})
+            runtime=time.perf_counter()-started
+            peak_cuda=(torch.cuda.max_memory_allocated(device) if device.type=="cuda" else None)
+            rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            rows.append({"stage":phase,"epoch":epoch,"train":train_metrics,
+                         "validation":validation,"selection_score":score,
+                         "runtime_seconds":runtime,"max_rss_kib":rss_kib,
+                         "cuda_peak_memory_bytes":peak_cuda})
             print(f"stage={phase} epoch={epoch:04d} loss={train_metrics['loss']:.5f} val={score:.5f}", flush=True)
             if score < best:
                 best = score
