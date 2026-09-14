@@ -6,8 +6,9 @@ import pytest
 import torch
 
 from test_manifold_moe import model as old_model, archive
-from climate_diffusion.recurrent_flow import drift_per_day, residual_target, physical_step
-from climate_diffusion.train_manifold_moe import train_manifold_moe, _pairs
+from climate_diffusion.recurrent_flow import (drift_per_day, residual_target, physical_step,
+                                              integrate_flow_tau)
+from climate_diffusion.train_manifold_moe import train_manifold_moe, _pairs, _epoch
 from climate_diffusion.inference import LatentFlowForecaster
 from climate_diffusion.manifold_moe import RECURRENT_FORMAT
 from climate_diffusion.temporal_supervision import TemporalObjective, fit_temporal_statistics
@@ -193,3 +194,60 @@ def test_all_experts_share_physical_state_and_residual_source():
     r=m.config.manifold_dim
     torch.testing.assert_close(seen[0][0][1][:,:r],seen[0][2][1][:,:r],atol=0,rtol=0)
     assert not torch.equal(seen[0][0][0],seen[0][2][0])
+
+
+def test_one_step_geometry_reuse_preserves_forward_parameter_gradients_and_decoder_input_gradient():
+    """Regression for the B/C optimization: one chart, one differentiable factorization."""
+    import copy
+    reference=model(); optimized=copy.deepcopy(reference)
+    source=torch.randn(2,3); physical=torch.randn(2,3,requires_grad=True)
+    context=torch.randn(2,4); hours=torch.tensor([0.,6.])
+
+    ref=integrate_flow_tau(reference,source,physical,context,hours,
+                           integration_steps=2,reuse_geometry=False)[0]
+    ref.square().mean().backward()
+    ref_grad={k:p.grad.detach().clone() for k,p in reference.named_parameters() if p.grad is not None}
+    physical_ref_grad=physical.grad.detach().clone()
+
+    physical2=physical.detach().clone().requires_grad_()
+    out=integrate_flow_tau(optimized,source,physical2,context,hours,
+                           integration_steps=2,reuse_geometry=True)[0]
+    out.square().mean().backward()
+    torch.testing.assert_close(out,ref,rtol=2e-4,atol=2e-5)
+    torch.testing.assert_close(physical2.grad,physical_ref_grad,rtol=3e-3,atol=3e-5)
+    for k,p in optimized.named_parameters():
+        if k in ref_grad:
+            assert p.grad is not None
+            torch.testing.assert_close(p.grad,ref_grad[k],rtol=5e-3,atol=5e-5)
+
+    calls=0
+    original=optimized.jacobian
+    def counted(q):
+        nonlocal calls
+        calls += 1
+        return original(q)
+    optimized.jacobian=counted
+    integrate_flow_tau(optimized,source,physical2.detach(),context,hours,
+                       integration_steps=3,reuse_geometry=True)
+    assert calls == 1
+
+
+def test_stage_a_decoded_delta_and_finite_step_losses_are_active_and_backward(archive):
+    path,_=archive
+    states,times,schema=load_moe_archive(path)
+    mean,scale=states[:50].mean(0),states[:50].std(0)
+    scale[scale < 1e-6]=1
+    normalized=torch.from_numpy(((states-mean)/scale).astype('float32'))
+    stats=fit_temporal_statistics(states,times,schema,scale,50)
+    temporal=TemporalObjective(schema,mean,scale,stats)
+    m=old_model(); m.set_stage('manifold')
+    from torch.utils.data import DataLoader, TensorDataset
+    loader=DataLoader(TensorDataset(normalized[:4],normalized[1:5]),batch_size=2)
+    options=dict(physics_weight=.1,invariant_weight=.05,metric_weight=.1,dynamics_weight=.1,
+                 gate_weight=.2,balance_weight=.05,diversity_weight=.001,projection_weight=.05,
+                 entropy_weight=.01,ae_delta_weight=.05,finite_step_drift_weight=.05)
+    before=[p.detach().clone() for p in m.manifold.parameters()]
+    metrics=_epoch(m,loader,torch.device('cpu'),torch.Generator().manual_seed(1),
+                   torch.optim.SGD(m.manifold.parameters(),lr=1e-4),options,temporal=temporal)
+    assert metrics['loss_ae_delta'] > 0 and metrics['loss_finite_step_drift'] > 0
+    assert any(not torch.equal(a,b) for a,b in zip(before,m.manifold.parameters()))

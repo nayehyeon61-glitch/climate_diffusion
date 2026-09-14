@@ -48,6 +48,9 @@ case "$phase" in
       --forecast-dynamics recurrent_residual --history-steps 6 --history-stride 4 --horizon-steps 20 \
       --num-experts 4 --manifold-dim 16 --expert-latent-dim 64 --gate-hidden-dim 160 \
       --residual-noise-std 1 --manifold-epochs "${TEMPORAL_A_EPOCHS:-50}" --early-stop-patience 8 \
+      --ae-delta-weight "${TEMPORAL_A_DELTA_WEIGHT:-0.05}" \
+      --finite-step-drift-weight "${TEMPORAL_A_DRIFT_WEIGHT:-0.05}" \
+      --a-tendency-quality-threshold "${TEMPORAL_A_TENDENCY_MAX:-1.0}" \
       2>&1 | tee "$TEMPORAL_RUN/a.console.log"
     python scripts/prepare_temporal_120h.py --archive "$TEMPORAL_ARCHIVE" \
       --output "$TEMPORAL_RUN/preflight-a-verified.json" --checkpoint "$TEMPORAL_RUN/a.pt"

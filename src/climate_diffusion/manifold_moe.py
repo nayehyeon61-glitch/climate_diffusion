@@ -88,6 +88,31 @@ def tangent_lift(jacobian, raw_fields, weights, ridge):
     return intrinsic, projected, metric
 
 
+def prepare_tangent_lift(jacobian, weights, ridge):
+    """Prepare chart-only terms once for repeated solves at one physical state.
+
+    The returned tensors intentionally retain their autograd graph.  A prepared
+    object is valid only while ``physical_q`` is fixed (one physical step); it
+    must never be reused after recurrence advances the chart coordinate.
+    """
+    jt_w = jacobian.transpose(-2, -1) * weights
+    metric = jt_w @ jacobian
+    size = metric.shape[-1]
+    damping = ridge * metric.diagonal(dim1=-2, dim2=-1).mean(-1).clamp_min(1e-8)
+    system = metric + damping[:, None, None] * torch.eye(
+        size, device=metric.device, dtype=metric.dtype)
+    # J.T W J is symmetric positive definite after positive ridge damping.
+    factor = torch.linalg.cholesky(system)
+    return {"jacobian": jacobian, "jt_w": jt_w, "metric": metric, "factor": factor}
+
+
+def tangent_lift_prepared(prepared, raw_fields):
+    rhs = prepared["jt_w"] @ raw_fields.transpose(1, 2)
+    intrinsic = torch.cholesky_solve(rhs, prepared["factor"]).transpose(1, 2)
+    projected = intrinsic @ prepared["jacobian"].transpose(1, 2)
+    return intrinsic, projected, prepared["metric"]
+
+
 class PhysicsManifoldAE(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -235,12 +260,24 @@ class ManifoldMoE(nn.Module):
             normal_q = q.clone() if torch.is_inference(q) else q
             return torch.func.vmap(torch.func.jacfwd(self.decode))(normal_q)
 
-    def field(self, q, tau, context, lead, *, mode=None, physical_q=None):
+    def prepare_field_geometry(self, physical_q):
+        """Build differentiable decoder/projection geometry for one physical step."""
+        shared_state = self.manifold.spatial_dct(self.decode(physical_q))
+        jacobian = self.jacobian(physical_q)
+        projection = prepare_tangent_lift(
+            jacobian, self.physics.metric_weights, self.config.projection_ridge)
+        return {"physical_q": physical_q, "shared_state": shared_state,
+                "projection": projection}
+
+    def field(self, q, tau, context, lead, *, mode=None, physical_q=None, geometry=None):
         # Recurrent mode: q is residual-space FM state (q/day), physical_q is
         # the current physical state. Never project at a residual/noise state.
         if self.config.forecast_dynamics == "recurrent_residual" and physical_q is None:
             raise ValueError("Residual FM field requires physical_q; tau is not physical time")
         chart_q = q if physical_q is None else physical_q
+        if geometry is not None:
+            if physical_q is None or geometry["physical_q"] is not physical_q:
+                raise ValueError("Prepared geometry is local to its exact physical_q tensor")
         if not bool(self.manifold_ready):
             raise ValueError("Pretrain and seal the manifold before expert flow evaluation")
         mode = mode or "local"
@@ -256,13 +293,18 @@ class ManifoldMoE(nn.Module):
             pi = torch.full_like(pi, 1 / self.config.num_experts)
         elif mode.startswith("expert:"):
             pi = F.one_hot(torch.full((len(q),), int(mode[7:]), device=q.device), self.config.num_experts).to(q)
-        shared_state = self.manifold.spatial_dct(self.decode(chart_q))
+        shared_state = (geometry["shared_state"] if geometry is not None else
+                        self.manifold.spatial_dct(self.decode(chart_q)))
         expert_condition = torch.cat((q, condition), -1)
         spectral = torch.stack([expert(shared_state, expert_condition) for expert in self.experts], 1)
         raw = self.manifold.spatial_dct(spectral, inverse=True)
-        jacobian = self.jacobian(chart_q)
-        intrinsic, projected, metric = tangent_lift(jacobian, raw, self.physics.metric_weights,
-                                                   self.config.projection_ridge)
+        if geometry is None:
+            jacobian = self.jacobian(chart_q)
+            intrinsic, projected, metric = tangent_lift(
+                jacobian, raw, self.physics.metric_weights, self.config.projection_ridge)
+        else:
+            jacobian = geometry["projection"]["jacobian"]
+            intrinsic, projected, metric = tangent_lift_prepared(geometry["projection"], raw)
         velocity = (pi[..., None] * intrinsic).sum(1)
         return {"velocity": velocity, "intrinsic_candidates": intrinsic, "candidates": projected,
                 "raw_candidates": raw, "jacobian": jacobian, "metric": metric, "router": pi,

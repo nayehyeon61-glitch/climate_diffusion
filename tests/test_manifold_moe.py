@@ -208,6 +208,10 @@ def test_abc_checkpoint_inference_evaluation(archive,tmp_path):
     assert result["format"] == "climate_diffusion.manifold_moe_evaluation.v1"
     assert sum(result["rank_histogram_counts"]) == 2*3*32
     assert 0<=result["normalized_overall"]["coverage_80"]<=1
+    assert set(result["normalized_overall"]["coverage_curve"]) == {"0.5","0.8","0.9"}
+    assert len(result["by_lead_normalized"]) == 3
+    assert {"crps","fair_crps","energy","fair_energy"} <= set(result["by_lead_normalized"][0])
+    assert "finite M" in result["coverage_contract"]
     standalone = train_manifold_moe(path,tmp_path/"b-again.pt",stage="specialize",
                                     init_checkpoint=tmp_path/"model.manifold.pt",expert_epochs=1,
                                     batch_size=4,window_stride=8,ensemble_size=2,integration_steps=1,

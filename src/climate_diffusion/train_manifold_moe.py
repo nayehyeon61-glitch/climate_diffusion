@@ -107,6 +107,17 @@ def _epoch(model, loader, device, generator, optimizer, options, *, temporal=Non
                     pred_v = (next_reconstruction-reconstruction)*temporal.scale / model.config.step_hours / temporal.tendency_scale
                     true_v = (next_state-state)*temporal.scale / model.config.step_hours / temporal.tendency_scale
                     metrics.update(temporal.state_metrics(pred_v, true_v, "reconstruction_tendency"))
+                    metrics["loss_ae_delta"] = ((pred_v-true_v).square()*temporal.metric).sum(-1).mean()
+                    z = model.manifold.encode(state)
+                    drift_z = z + (model.config.step_hours/24)*model.manifold.latent_drift(z)
+                    drift_next = model.manifold.decode(drift_z)
+                    drift_v = ((drift_next-reconstruction)*temporal.scale /
+                               model.config.step_hours / temporal.tendency_scale)
+                    metrics["loss_finite_step_drift"] = ((drift_v-true_v).square()
+                                                          * temporal.metric).sum(-1).mean()
+                    metrics["loss"] = (metrics["loss"]
+                        + options["ae_delta_weight"]*metrics["loss_ae_delta"]
+                        + options["finite_step_drift_weight"]*metrics["loss_finite_step_drift"])
                 size = len(state)
             else:
                 batch = {k: v.to(device) for k, v in batch.items()}
@@ -182,15 +193,20 @@ def train_manifold_moe(archive_path, output_path, *, stage="all", init_checkpoin
                        wind_speed_weight=0.0, wind_direction_weight=0.0, trajectory_edges=2,
                        validation_trajectory_edges=0, temporal_warmup_epochs=3,
                        trajectory_selection_weight=0.1, variable_weights=None, log_gradient_norms=False,
-                       weight_decay=0.0, early_stop_patience=0):
+                       weight_decay=0.0, early_stop_patience=0, ae_delta_weight=0.0,
+                       finite_step_drift_weight=0.0, a_tendency_quality_threshold=None):
     options = {k: v for k, v in locals().items() if k.endswith("_weight")}
     options.update(ensemble_size=ensemble_size, integration_steps=integration_steps, sampled_leads=sampled_leads)
     options.update(trajectory_edges=trajectory_edges, validation_trajectory_edges=validation_trajectory_edges,
-                   temporal_warmup_epochs=temporal_warmup_epochs, log_gradient_norms=log_gradient_norms)
+                   temporal_warmup_epochs=temporal_warmup_epochs, log_gradient_norms=log_gradient_norms,
+                   a_tendency_quality_threshold=a_tendency_quality_threshold)
     if min(trajectory_edges, validation_trajectory_edges, temporal_warmup_epochs, early_stop_patience) < 0:
         raise ValueError("Block/warmup/patience counts cannot be negative")
     if not math.isfinite(weight_decay) or weight_decay < 0:
         raise ValueError("weight_decay must be finite and nonnegative")
+    if (a_tendency_quality_threshold is not None and
+            (not math.isfinite(a_tendency_quality_threshold) or a_tendency_quality_threshold <= 0)):
+        raise ValueError("A tendency quality threshold must be finite and positive")
     if batch_size < 2:
         raise ValueError("Manifold metric requires batch_size >= 2")
     if max_validation_windows < 2:
@@ -382,6 +398,19 @@ def train_manifold_moe(archive_path, output_path, *, stage="all", init_checkpoin
         payload = torch.load(phase_output, map_location=device, weights_only=False)
         model.load_state_dict(payload["model"])
         if phase == "manifold":
+            best_row = next(r for r in rows if r["epoch"] == payload["training"]["best_epoch"])
+            tendency_keys = ["reconstruction_tendency_mse_" + n for n in temporal.names]
+            tendency_quality = float(np.mean([best_row["validation"][k] for k in tendency_keys]))
+            payload["training"]["manifold_quality_gate"] = {
+                "metric": "mean_variable_reconstruction_tendency_mse",
+                "value": tendency_quality,
+                "threshold": a_tendency_quality_threshold,
+                "passed": a_tendency_quality_threshold is None or tendency_quality <= a_tendency_quality_threshold}
+            if a_tendency_quality_threshold is not None and tendency_quality > a_tendency_quality_threshold:
+                _save(phase_output, model, schema, mean, scale, payload["training"], rows)
+                raise RuntimeError(
+                    f"Stage A tendency quality gate failed: {tendency_quality:.6f} > "
+                    f"{a_tendency_quality_threshold:.6f}; do not start costly Stage B")
             model.seal_manifold(normalized[:end].to(device))
             _save(phase_output, model, schema, mean, scale, payload["training"], rows)
         previous = phase_output
@@ -414,8 +443,10 @@ def main(argv=None):
                           ("anchor_weight", 1.0), ("delta_weight", 0.0), ("trajectory_weight", 0.0),
                           ("delta_member_weight", 0.0),
                           ("wind_speed_weight", 0.0), ("wind_direction_weight", 0.0),
-                          ("trajectory_selection_weight", 0.1), ("weight_decay", 0.0)):
+                          ("trajectory_selection_weight", 0.1), ("weight_decay", 0.0),
+                          ("ae_delta_weight", 0.0), ("finite_step_drift_weight", 0.0)):
         parser.add_argument("--" + name.replace("_", "-"), type=float, default=default)
+    parser.add_argument("--a-tendency-quality-threshold", type=float)
     parser.add_argument("--device")
     parser.add_argument("--forecast-dynamics", choices=("lead_conditioned","recurrent_residual"))
     parser.add_argument("--log-gradient-norms", action="store_true")

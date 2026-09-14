@@ -1,0 +1,129 @@
+{
+  "format": "climate_diffusion.saved_result_audit.v1",
+  "source_scope": "saved forecast + aggregate validation + four-origin routing trace; raw ERA5 unavailable",
+  "lead_hours": [
+    6,
+    12,
+    18,
+    24,
+    30,
+    36,
+    42,
+    48,
+    54,
+    60,
+    66,
+    72,
+    78,
+    84,
+    90,
+    96,
+    102,
+    108,
+    114,
+    120
+  ],
+  "member_pair_rmse_raw_state": [
+    57.71054177835044,
+    122.83257437624361,
+    176.62796503787428,
+    228.16646505887624,
+    266.3743792636098,
+    300.5777478324525,
+    330.24419614862865,
+    364.7980651297554,
+    393.91228927228065,
+    423.3115807249433,
+    445.7727734266746,
+    466.66914320280847,
+    486.6158291220604,
+    503.58092663952397,
+    521.4497895897246,
+    539.1931998695826,
+    554.3715316277783,
+    570.3097383259784,
+    581.3817135296491,
+    596.443426545473
+  ],
+  "member_increment_spread_raw_state": [
+    20.45364172519561,
+    18.86029292644216,
+    18.144257232380305,
+    15.07371723821557,
+    14.03794572686241,
+    14.488258523529723,
+    14.433509581470753,
+    15.417430521712056,
+    12.90882066333755,
+    13.490371453523226,
+    10.943541664183176,
+    11.55021658249646,
+    10.850034290813138,
+    12.153262072188904,
+    11.179478630196918,
+    11.362256040932504,
+    11.34089262506593,
+    10.357007900775502,
+    11.021051902562217
+  ],
+  "rank_histogram": {
+    "counts": [
+      255236,
+      122195,
+      111644,
+      108851,
+      108632,
+      111931,
+      113415,
+      122881,
+      255935
+    ],
+    "uniform_expected_per_bin": 145635.55555555556,
+    "edge_to_center_ratio": 2.352764378820237,
+    "interpretation": "pooled correlated scalar ranks; U-shape is under-dispersion evidence, not full-support proof"
+  },
+  "aggregate_validation": {
+    "mae": 0.7724632024765015,
+    "rmse": 1.0479655265808105,
+    "bias": -0.012782583944499493,
+    "crps": 0.6061513759195805,
+    "ensemble_spread": 0.6165801398456097,
+    "persistence_rmse": 0.9809608459472656,
+    "climatology_rmse": 1.015041708946228,
+    "energy": 0.7862860134592773,
+    "coverage_80": 0.4946540832519531,
+    "rms_spread": 0.7512193059303895,
+    "spread_skill_ratio": 0.7168358947659159
+  },
+  "noise_path": {
+    "projection_ratio_mean": 0.5746057770913466,
+    "projection_ratio_first_last": [
+      0.5724138068035245,
+      0.5393864754587412
+    ],
+    "residual_member_variance_q_per_hour2_first_last": [
+      0.0009429433266632259,
+      0.0007887992833275348
+    ],
+    "drift_q_rms_per_hour_first_last": [
+      0.027587964665144682,
+      0.029856457142159343
+    ],
+    "residual_q_rms_per_hour_first_last": [
+      0.036748914630152285,
+      0.03555115102790296
+    ],
+    "combined_q_rms_per_hour_first_last": [
+      0.039444756461307406,
+      0.015866691013798118
+    ],
+    "diagnosis": "late drift/residual cancellation is visible; causal attribution requires new ablations"
+  },
+  "unavailable_without_raw_archive": [
+    "lead/variable/region/origin ensemble-mean error",
+    "nominal coverage curve",
+    "bias-corrected calibration",
+    "drift-only/residual-only/full same-cohort scores",
+    "A AE-oracle/drift/tangent capture on actual ERA5 pairs"
+  ]
+}

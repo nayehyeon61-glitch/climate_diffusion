@@ -15,10 +15,27 @@ from .moe_data import load_moe_archive, validate_moe_split
 from .train import _sha256
 
 
-def _ensemble_crps(samples: np.ndarray, target: np.ndarray) -> float:
+def _ensemble_crps(samples: np.ndarray, target: np.ndarray, *, fair: bool = False) -> float:
     accuracy = np.abs(samples - target[None, :]).mean()
-    pairwise = np.abs(samples[:, None, :] - samples[None, :, :]).mean()
-    return float(accuracy - 0.5 * pairwise)
+    members = len(samples)
+    pairwise = np.abs(samples[:, None, :] - samples[None, :, :]).sum()
+    denominator = members*(members-1) if fair else members*members
+    return float(accuracy - 0.5 * pairwise/(denominator*target.size))
+
+
+def _energy_score(samples: np.ndarray, target: np.ndarray, *, fair: bool = False) -> float:
+    members, dimension = samples.shape[0], samples.shape[-1]
+    positions = int(np.prod(samples.shape[1:-1])) if samples.ndim > 2 else 1
+    accuracy = np.linalg.norm(samples-target[None],axis=-1).mean()
+    pairwise = np.linalg.norm(samples[:,None]-samples[None,:],axis=-1).sum()
+    denominator = members*(members-1) if fair else members*members
+    return float((accuracy-.5*pairwise/(denominator*positions))/np.sqrt(dimension))
+
+
+def _coverage(samples: np.ndarray, target: np.ndarray, nominal: float) -> float:
+    alpha=(1-nominal)/2
+    low,high=np.quantile(samples,[alpha,1-alpha],axis=0)
+    return float(((target>=low)&(target<=high)).mean())
 
 
 def _error_metrics(prediction: np.ndarray, target: np.ndarray) -> dict[str, float]:
@@ -91,7 +108,7 @@ def evaluate_flow_checkpoint(
         from .temporal_supervision import TemporalObjective
         temporal = TemporalObjective(schema, mean, scale, training["temporal_statistics"])
 
-    predictions, targets = [], []
+    predictions, targets, normalized_ensembles = [], [], []
     case_rows: list[dict[str, Any]] = []
     rank_counts = np.zeros(ensemble_size + 1, dtype=np.int64)
     rank_generator = np.random.default_rng(seed + 100000)
@@ -124,15 +141,18 @@ def evaluate_flow_checkpoint(
                 "target_time": str(times[target_index]),
                 "last_target_time": str(times[target_end - 1]),
                 "crps": _ensemble_crps(normalized_samples, normalized_target),
+                "fair_crps": _ensemble_crps(normalized_samples, normalized_target, fair=True),
                 "ensemble_spread": float(normalized_samples.std(axis=0).mean()),
+                "member_pair_rms_distance": float(np.sqrt(np.square(
+                    normalized_samples[:,None]-normalized_samples[None,:]).mean(axis=-1))[
+                        ~np.eye(ensemble_size,dtype=bool)].mean()),
             }
         )
         case_rows.append(case_metrics)
         if forecaster.is_moe:
             # Multivariate field energy score at each lead, then average leads.
-            accuracy = np.linalg.norm(normalized_samples - normalized_target[None], axis=-1).mean()
-            pairwise = np.linalg.norm(normalized_samples[:, None] - normalized_samples[None, :], axis=-1).mean()
-            case_metrics["energy"] = float((accuracy - 0.5 * pairwise) / np.sqrt(states.shape[1]))
+            case_metrics["energy"] = _energy_score(normalized_samples, normalized_target)
+            case_metrics["fair_energy"] = _energy_score(normalized_samples, normalized_target, fair=True)
         if forecaster.is_manifold:
             if temporal is not None:
                 import torch
@@ -144,8 +164,9 @@ def evaluate_flow_checkpoint(
                                   torch.tensor(observed[None],dtype=torch.float32),
                                   torch.full((1,horizon),float(forecaster.forecast_step_hours)))
                 case_metrics["temporal"] = {k:float(v) for k,v in tm.items()}
-            low, high = np.quantile(normalized_samples, [0.1, 0.9], axis=0)
-            case_metrics["coverage_80"] = float(((normalized_target >= low) & (normalized_target <= high)).mean())
+            case_metrics["coverage"] = {str(level):_coverage(normalized_samples,normalized_target,level)
+                                        for level in (0.5,0.8,0.9)}
+            case_metrics["coverage_80"] = case_metrics["coverage"]["0.8"]
             case_metrics["mean_variance"] = float(normalized_samples.var(axis=0).mean())
             below = (normalized_samples < normalized_target[None]).sum(axis=0)
             ties = (normalized_samples == normalized_target[None]).sum(axis=0)
@@ -153,6 +174,7 @@ def evaluate_flow_checkpoint(
             rank_counts += np.bincount(ranks.ravel(), minlength=ensemble_size + 1)
         predictions.append(ensemble_mean)
         targets.append(target)
+        normalized_ensembles.append(normalized_samples)
 
     prediction_array = np.stack(predictions)
     target_array = np.stack(targets)
@@ -160,6 +182,7 @@ def evaluate_flow_checkpoint(
     normalized_target = (target_array - mean[None, :]) / scale[None, :]
     overall = _error_metrics(normalized_prediction, normalized_target)
     overall["crps"] = float(np.mean([row["crps"] for row in case_rows]))
+    overall["fair_crps"] = float(np.mean([row["fair_crps"] for row in case_rows]))
     overall["ensemble_spread"] = float(
         np.mean([row["ensemble_spread"] for row in case_rows])
     )
@@ -215,19 +238,40 @@ def evaluate_flow_checkpoint(
         result["moe_mode"] = moe_mode or ("local" if forecaster.is_manifold else forecaster.model.stage)
         result["sampling_contract"] = training["sampling_contract"]
         result["normalized_overall"]["energy"] = float(np.mean([row["energy"] for row in case_rows]))
-        result["probabilistic_score_estimator"] = "empirical (diagonal pairs included), not training fair estimator"
+        result["normalized_overall"]["fair_energy"] = float(np.mean([row["fair_energy"] for row in case_rows]))
+        ensembles=np.stack(normalized_ensembles)
+        result["by_lead_normalized"]=[]
+        for lead in range(horizon):
+            lead_samples=ensembles[:, :, lead] if ensembles.ndim == 4 else ensembles
+            lead_target=normalized_target[:,lead] if normalized_target.ndim == 3 else normalized_target
+            row={"lead_hours":(lead+1)*forecaster.forecast_step_hours,
+                 **_error_metrics(lead_samples.mean(1),lead_target),
+                 "crps":float(np.mean([_ensemble_crps(s,y) for s,y in zip(lead_samples,lead_target)])),
+                 "fair_crps":float(np.mean([_ensemble_crps(s,y,fair=True) for s,y in zip(lead_samples,lead_target)])),
+                 "energy":float(np.mean([_energy_score(s,y) for s,y in zip(lead_samples,lead_target)])),
+                 "fair_energy":float(np.mean([_energy_score(s,y,fair=True) for s,y in zip(lead_samples,lead_target)])),
+                 "coverage":{str(level):float(np.mean([_coverage(s,y,level) for s,y in zip(lead_samples,lead_target)]))
+                             for level in (0.5,0.8,0.9)}}
+            result["by_lead_normalized"].append(row)
+        result["probabilistic_score_estimators"] = {
+            "crps_energy":"both empirical K^2 and fair K(K-1) are reported",
+            "training_match":"fair estimators match C marginal score and trajectory Energy assumptions only for iid members"}
     if forecaster.is_manifold:
         result["format"] = "climate_diffusion.manifold_moe_evaluation.v1"
         result["stage"] = forecaster.model.stage
         result["rank_histogram_counts"] = rank_counts.tolist()
         result["rank_histogram_contract"] = "pooled scalar coordinates/leads; randomized ties; correlated samples"
         overall["coverage_80"] = float(np.mean([row["coverage_80"] for row in case_rows]))
+        overall["coverage_curve"] = {str(level):float(np.mean([row["coverage"][str(level)] for row in case_rows]))
+                                     for level in (0.5,0.8,0.9)}
         overall["rms_spread"] = float(np.sqrt(np.mean([row["mean_variance"] for row in case_rows])))
         overall["spread_skill_ratio"] = overall["rms_spread"] / overall["rmse"] if overall["rmse"] > 0 else None
         if temporal is not None:
             result["temporal_overall"] = {k:float(np.mean([row["temporal"][k] for row in case_rows]))
                                            for k in case_rows[0]["temporal"]}
             result["temporal_estimator"] = "fair off-diagonal Energy, full physical horizon including observed origin"
+        result["coverage_contract"] = ("central empirical quantiles from finite M; pooled correlated grid/time "
+                                       "coordinates are diagnostics, not independent coverage trials")
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(

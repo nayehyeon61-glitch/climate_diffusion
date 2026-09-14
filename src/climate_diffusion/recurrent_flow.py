@@ -28,7 +28,7 @@ def residual_target(model, current_state, next_state, dt_hours):
 
 
 def integrate_flow_tau(model, source, physical_q, context, physical_hours, *, integration_steps,
-                       mode="local"):
+                       mode="local", reuse_geometry=True):
     """Transport residual-space noise to a residual q/day sample, midpoint tau ODE.
 
     physical_q is held fixed during this conditional generative solve. All K
@@ -40,13 +40,18 @@ def integrate_flow_tau(model, source, physical_q, context, physical_hours, *, in
     r = source * model.config.residual_noise_std
     lead = physical_hours / model.config.horizon_hours
     step_tau = 1 / integration_steps
+    # physical_q is immutable inside this generative tau solve.  Decoder/Jacobian/
+    # Gram/factorization are therefore identical at every midpoint evaluation.
+    # Keeping this object in-graph preserves gradients to q and the decoder.
+    geometry = model.prepare_field_geometry(physical_q) if reuse_geometry else None
     last = None
     for index in range(integration_steps):
         tau = r.new_full((len(r),), index*step_tau)
-        a = model.field(r, tau, context, lead, mode=mode, physical_q=physical_q)
+        a = model.field(r, tau, context, lead, mode=mode, physical_q=physical_q,
+                        geometry=geometry)
         middle = r + 0.5*step_tau*a["velocity"]
         last = model.field(middle, tau+0.5*step_tau, context, lead,
-                           mode=mode, physical_q=physical_q)
+                           mode=mode, physical_q=physical_q, geometry=geometry)
         r = r + step_tau*last["velocity"]
     return r, last
 

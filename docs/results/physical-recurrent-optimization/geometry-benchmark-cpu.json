@@ -1,0 +1,17 @@
+{
+  "format": "climate_diffusion.recurrent_geometry_benchmark.v1",
+  "checkpoint": "docs/results/physical-recurrent-run-001/c.pt",
+  "device": "cpu",
+  "batch_size": 2,
+  "integration_steps": 4,
+  "repeats": 3,
+  "baseline_seconds_median": 0.14484861099981572,
+  "optimized_seconds_median": 0.056666293000034784,
+  "speedup": 2.556168814496597,
+  "expected_jacobian_calls_baseline": 8,
+  "expected_jacobian_calls_optimized": 1,
+  "forward_max_abs_difference": 2.980232238769531e-07,
+  "physical_q_gradient_max_abs_difference": 8.940696716308594e-08,
+  "parameter_gradient_relative_l2_difference": 4.281098711089726e-07,
+  "claim_scope": "measured CPU forward+backward; not a GPU speed or memory claim"
+}
