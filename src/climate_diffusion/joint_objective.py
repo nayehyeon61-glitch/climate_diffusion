@@ -131,8 +131,7 @@ def trajectory_scores(samples: torch.Tensor, truth: torch.Tensor,
         samples,truth,dt_hours,tendency_scale)
     future = samples[:,:,1:]
     target_future = truth[:,1:]
-    w = None if metric is None else metric.to(samples).reshape(
-        *((1,)*(future.ndim-1)), -1)
+    w = None if metric is None else metric.to(samples).reshape(1,1,-1)
     state_crps = fair_crps(future,target_future,w)
     transition_crps = fair_crps(tendency,true_tendency,w)
 
@@ -219,6 +218,6 @@ def module_gradient_diagnostics(components: Mapping[str,torch.Tensor],
             for right in keys[i+1:]:
                 a,b=vectors[(left,group_name)],vectors[(right,group_name)]
                 denom=a.norm()*b.norm()
-                value=(a@b/denom).detach() if float(denom)>0 else a.new_tensor(float("nan"))
+                value=(a@b/denom).detach() if float(denom)>0 else a.new_zeros(())
                 result[f"gradient_cosine/{left}:{right}/{group_name}"]=float(value)
     return result
