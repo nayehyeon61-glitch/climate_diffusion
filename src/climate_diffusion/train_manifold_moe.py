@@ -175,6 +175,20 @@ def _epoch(model, loader, device, generator, optimizer, options, *, temporal=Non
                     future_truth = truth[:,1:].reshape(-1,truth.shape[-1])
                     metrics.update(ensemble_scores(future,future_truth))
                     auxiliary = model.manifold_loss(batch["origin"],batch["targets"][:,0],**pi_options)
+                    # AB keeps A's decoded one-step support objectives in the same
+                    # physical units/scales, using the observed first-pair dt.
+                    state,next_state=batch["origin"],batch["targets"][:,0]
+                    reconstructed=model.manifold.decode(model.manifold.encode(state))
+                    reconstructed_next=model.manifold.decode(model.manifold.encode(next_state))
+                    actual_dt=batch["dt_hours"][:,0,None]
+                    true_v=(next_state-state)*temporal.scale/actual_dt/temporal.tendency_scale
+                    ae_v=(reconstructed_next-reconstructed)*temporal.scale/actual_dt/temporal.tendency_scale
+                    metrics["loss_ae_delta"]=((ae_v-true_v).square()*temporal.metric).sum(-1).mean()
+                    raw_z=model.manifold.encode(state)
+                    drift_z=raw_z+(actual_dt/24)*model.manifold.latent_drift(raw_z)
+                    drift_state=model.manifold.decode(drift_z)
+                    drift_v=(drift_state-reconstructed)*temporal.scale/actual_dt/temporal.tendency_scale
+                    metrics["loss_finite_step_drift"]=((drift_v-true_v).square()*temporal.metric).sum(-1).mean()
                     anchor_states = torch.cat((batch["origin"],batch["targets"].reshape(-1,batch["targets"].shape[-1])),0)
                     anchor = (model.encode(anchor_states)-model.reference_encode(anchor_states).detach()).square().mean()
                     metrics.update({"pi_"+k:v for k,v in auxiliary.items()})
