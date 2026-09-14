@@ -115,8 +115,8 @@ def normalized_tendencies(samples: torch.Tensor, truth: torch.Tensor,
         raise ValueError("Every observed transition needs positive actual dt_hours")
     floor = torch.finfo(samples.dtype).eps
     scale = tendency_scale.to(samples).reshape(1,1,1,d).clamp_min(floor)
-    predicted = samples.diff(2)/dt_hours[:,None,:,None]/scale
-    observed = truth.diff(1)/dt_hours[:,:,None]/scale[:,0]
+    predicted = samples.diff(dim=2)/dt_hours[:,None,:,None]/scale
+    observed = truth.diff(dim=1)/dt_hours[:,:,None]/scale[:,0]
     return predicted,observed
 
 
