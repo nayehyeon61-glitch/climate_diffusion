@@ -79,7 +79,7 @@ def test_constant_physical_velocity_20_steps_analytic_stub():
     torch.testing.assert_close(values.diff(dim=2),torch.full_like(values[:,:,1:],.25),atol=1e-6,rtol=1e-5)
 
 
-@pytest.mark.parametrize('stage',['specialize','joint'])
+@pytest.mark.parametrize('stage',['specialize','joint','joint_ab'])
 def test_full120h_gradient_and_frozen_b(stage):
     m = model(); m.set_stage(stage)
     before = {k:v.clone() for k,v in m.manifold.state_dict().items()}
@@ -107,7 +107,8 @@ def test_residual_fm_target_units_detach_and_shared_source():
            'targets':torch.randn(2,20,32),'dt_hours':torch.full((2,20),6.)}
     r,v,tau,h,lead,target,steps,q=_pairs(m,batch,torch.Generator().manual_seed(3),2,
                                        return_steps=True,return_physical=True)
-    assert not q.requires_grad
+    assert q.requires_grad
+    assert not v.requires_grad
     trajectory=torch.cat((batch['origin'][:,None],batch['targets']),1)
     rows=torch.arange(2)[:,None]
     prev=trajectory[rows,steps-1].reshape(-1,32)
