@@ -21,10 +21,16 @@ def residual_target(model, current_state, next_state, dt_hours):
     if (dt_hours.shape != (len(current_state),) or not bool(torch.isfinite(dt_hours).all())
             or bool((dt_hours <= 0).any())):
         raise ValueError("Residual target requires positive actual dt_hours per pair")
+    # The conditioning coordinate stays differentiable.  Only the teacher target
+    # branch is detached, so encoder/drift cannot shrink the residual label while
+    # generated rollouts, Jacobians and projections retain their gradients.
+    q = model.encode(current_state)
     with torch.no_grad():
-        q = model.encode(current_state)
-        target = (model.encode(next_state)-q) / (dt_hours[:, None]/24) - drift_per_day(model, q)
-    return q, target
+        previous = model.encode(current_state)
+        following = model.encode(next_state)
+        target = ((following-previous)/(dt_hours[:,None]/24)
+                  - drift_per_day(model,previous))
+    return q, target.detach()
 
 
 def integrate_flow_tau(model, source, physical_q, context, physical_hours, *, integration_steps,

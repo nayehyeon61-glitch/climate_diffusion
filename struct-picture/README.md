@@ -1,5 +1,13 @@
 # Climate Flow: Manifold MoE, Full-state MoE 및 Dynamics 구조
 
+## 현재 A+B 공동 학습 + Loss V2 (2026-09-15 CLI 점검)
+
+- [15-joint-ab-loss-v2.md](15-joint-ab-loss-v2.md): warmup→AB→legacy C, target/gradient 및 두 시간축
+- [한국어 전체 실행 매뉴얼](../flow-matching_moe/JOINT_AB_TRAINING_MANUAL.md)
+- [미해결 단위·진단 오류와 검증 범위](../docs/results/joint-ab-loss-v2/manual-audit-2026-09-15.md)
+
+구현 연결과 성능/단위 검증 완료는 다릅니다. C는 V2 전체 profile이 아닌 기존 보정 경로입니다.
+
 ## 물리시간 재귀 residual FM (2026-09-11)
 
 - [13-physical-recurrent-training.md](13-physical-recurrent-training.md): A/B/C, full120h BPTT, 두 시간축과 shape

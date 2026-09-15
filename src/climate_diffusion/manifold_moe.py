@@ -206,13 +206,13 @@ class ManifoldMoE(nn.Module):
         self.set_stage(self.stage)
 
     def set_stage(self, stage):
-        if stage not in {"manifold", "specialize", "joint"}:
-            raise ValueError("Stage must be manifold, specialize, or joint")
+        if stage not in {"manifold", "specialize", "joint", "joint_ab"}:
+            raise ValueError("Stage must be manifold, specialize, joint, or joint_ab")
         self.stage = stage
         self.requires_grad_(False)
-        if stage in {"manifold", "joint"}:
+        if stage in {"manifold", "joint", "joint_ab"}:
             self.manifold.requires_grad_(True)
-        if stage in {"specialize", "joint"}:
+        if stage in {"specialize", "joint", "joint_ab"}:
             for module in (self.experts, self.gate, self.history_encoder):
                 module.requires_grad_(True)
         self.train(self.training)

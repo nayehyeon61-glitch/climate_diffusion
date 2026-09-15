@@ -1,5 +1,9 @@
 # 전체 학습 실행 매뉴얼: ERA5 120시간 State + Dynamics
 
+> 현재 A+B 공동 학습 + Loss V2의 순서와 명령은
+> [JOINT_AB_TRAINING_MANUAL.md](JOINT_AB_TRAINING_MANUAL.md)를 사용하세요.
+> 이 문서는 이전 lead-conditioned A→B→C 비교 경로를 보존합니다.
+
 **재귀 물리시간 신규 버전은 [RECURRENT_TRAINING_MANUAL.md](RECURRENT_TRAINING_MANUAL.md)를 사용하세요.** 아래는 비교용 기존 lead-conditioned 경로를 보존한 문서입니다.
 
 이 문서는 코드 `0e641b2`에서 구현된 학습을 **새 A 초기화부터 member 영상까지** 순서대로 실행하는 운영 매뉴얼입니다. 기존 checkpoint를 다시 렌더링하는 것만으로 새 loss를 학습한 것이 아닙니다.

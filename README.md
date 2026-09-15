@@ -13,15 +13,18 @@
 
 ## 처음 학습할 때의 실행 순서
 
-**현재 최종 Manifold MoE를 처음 실행한다면 [단계별 학습 README](flow-matching_moe/TRAINING_README.md)를
-1번부터 따라가세요.** 설치 → 합성 smoke → ERA5 archive 준비·검사 → A 학습(`stage_a.pt`) →
-B 전문화(`stage_b.pt`) → C ensemble 보정(`final.pt`) → validation 시간 비교 영상 →
-최종 test 평가·학습 그림 → 최신 관측의 미래 ensemble 저장 순서입니다.
+**이 브랜치의 새 실행 순서는 [한국어 A+B 전체 학습 매뉴얼](flow-matching_moe/JOINT_AB_TRAINING_MANUAL.md)을
+따라가세요.** 설치 → archive/preflight → warmup A → A+B 공동 학습 → 기존 C calibration →
+validation → 예측 NPZ 한 번 저장 → 모든 member 6h/12h 영상 → 설정 고정 후 test입니다.
+각 단계의 복사 가능한 명령, 입력/출력, 확인 조건, 중단/재시작 한계를 적었습니다.
 
-RunPod 명령, 각 단계의 입력/출력, 기존 checkpoint에서 시작할 위치, 중단 시 재실행 방법을
-함께 적었습니다. 연속 lead를 함께 뽑는 B/C 예시는 `--sampled-leads 2`를 사용합니다.
-현재 시간 변화율 **진단**은 구현되어 있지만, `Δstate/Δtime`을 직접 학습하는 별도
-trajectory loss가 추가된 것은 아닙니다. 코드 갱신만으로 기존 weight가 보정되지는 않습니다.
+2026-09-15 점검에서 **AB V2 tendency score 단위 환산 누락과 gradient-logging 오류**를
+확인했습니다. 이번 변경은 문서/runner 보정이며 해당 모델 문제를 고친 것이 아닙니다.
+[검증 보고](docs/results/joint-ab-loss-v2/manual-audit-2026-09-15.md)를 읽고 장기 ERA5
+재학습은 단위 문제를 수정·검증한 다음 진행하세요. C는 AB의 V2 profile 전체를 사용하지 않습니다.
+
+기존 frozen A→B→C 및 이전 checkpoint 경로는 비교/호환용으로 보존됩니다.
+[이전 단계별 README](flow-matching_moe/TRAINING_README.md)의 명령은 새 AB runner와 섞지 마세요.
 
 ## 최종 추가: Physics-informed Manifold MoE Ensemble
 
