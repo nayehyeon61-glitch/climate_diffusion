@@ -1,5 +1,10 @@
 # 물리시간 재귀 Flow: 전체 학습 실행 매뉴얼
 
+> 이 문서는 이전 frozen A→B→C 비교 경로입니다. 현재 `feature/joint-ab-loss-v2`의
+> warmup→AB→C 실행은 [새 한국어 매뉴얼](JOINT_AB_TRAINING_MANUAL.md)을 사용하세요.
+> 최신 AB는 teacher label만 detach하고 conditioning q는 gradient를 유지합니다.
+> 아래 과거 branch의 detach 설명을 현재 AB에 그대로 적용하지 마세요.
+
 대상 브랜치: `feature/physical-time-recurrent-flow`. 기존 full-state MoE·PI manifold·ensemble은 유지하고 **물리시간 연결/잔차 FM target**을 변경했습니다. 새로운 대형 backbone이나 expert 수 확대는 없습니다.
 
 현재 실제 구현은 다음과 같습니다.

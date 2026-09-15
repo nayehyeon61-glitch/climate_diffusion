@@ -1,5 +1,10 @@
 # Joint A+B + Ensemble Loss V2
 
+2026-09-15: [한국어 전체 실행 순서](../../../flow-matching_moe/JOINT_AB_TRAINING_MANUAL.md)와
+[CLI/단위 검증 보고](manual-audit-2026-09-15.md)를 추가했습니다. 새 장기 학습 결과가 아닙니다.
+현재 AB V2 tendency score의 물리 단위 환산 및 gradient logger 오류가 확인되어
+장기 ERA5 재학습 전 별도 보수가 필요합니다.
+
 Implementation branch: `feature/joint-ab-loss-v2`, based on optimization
 commit `4dd9bf4051aa8c277099c980313bdde91d48f854`.
 
