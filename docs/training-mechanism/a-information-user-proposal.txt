@@ -1,0 +1,1445 @@
+A-Manifold 확장 + Information Distribution + Stochastic Process Loss 설계
+=====================================================================
+
+1. 연구 목적
+------------
+
+현재 A/B/C 구조에서 A의 역할을 단순 deterministic predictor가 아니라,
+
+    "가능한 미래 상태공간(feasible future-state manifold)을 구성하고,
+     그 manifold 위에서 stochastic dynamics까지 학습하는 모듈"
+
+로 확장한다.
+
+기존 모델은 주로 제한된 surface variable
+
+    X_t = (MSLP, T2M, U10, V10)
+
+를 사용한다.
+
+하지만 실제 대기의 미래는 surface state 하나만으로 완전히 결정되지 않는다.
+상층 대기 구조, 지형, SST, humidity, pressure-level wind/geopotential 등
+추가적인 hidden physical state가 미래 evolution을 결정한다.
+
+따라서 다음 A에서는 동시에 다음을 학습한다.
+
+    (1) 기존 4개 변수의 deterministic prediction
+    (2) manifold 위의 vector field / tendency
+    (3) 미래 상태의 distribution
+    (4) 추가 physical information의 distributional geometry
+    (5) P(X_{t+1}|X_t) 형태의 transition probability
+    (6) Delta X_t의 conditional distribution
+    (7) multi-step trajectory / sample-path distribution
+
+즉 최종적으로는
+
+    State Manifold
+    +
+    Vector Field
+    +
+    Transition Kernel
+    =
+    Stochastic Dynamical Manifold
+
+를 구성하는 것이 목표다.
+
+
+2. 핵심 관점
+------------
+
+가장 중요한 구분은 다음과 같다.
+
+    무엇을 예측할 것인가?
+    !=
+    무엇을 보고 manifold를 만들 것인가?
+
+출력 target은 기존처럼
+
+    Y_t = (MSLP, T2M, U10, V10)
+
+를 유지할 수 있다.
+
+반면 manifold를 구성하기 위한 conditioning information에는
+더 풍부한 physical state를 사용할 수 있다.
+
+예:
+
+    C_t =
+    {
+        Z850, Z500, Z250,
+        U850, V850,
+        U500, V500,
+        T850, T500,
+        terrain height,
+        terrain slope,
+        land-sea mask,
+        SST,
+        humidity,
+        ...
+    }
+
+이렇게 하면 output dimension을 과도하게 늘리지 않고도,
+A가 실제 atmospheric state가 정의하는 가능한 미래공간을 학습할 수 있다.
+
+
+3. 현재 구조의 문제
+------------------
+
+현재 surface state만 보면
+
+    X_t = (P, T, u, v)
+
+이다.
+
+하지만 두 시점의 surface state가 거의 같아도
+
+    Z500_A != Z500_B
+    U850_A != U850_B
+    SST_A != SST_B
+
+이면 미래 evolution은 크게 다를 수 있다.
+
+즉 실제 관계는 단순한
+
+    X_t -> X_{t+1}
+
+가 아니라
+
+    X_t(partial)
+    ->
+    P(X_{t+1} | X_t(partial))
+
+에 가깝다.
+
+그리고 hidden state가 충분히 포함되지 않으면 실제로는
+
+    P(X_{t+1} | X_t, X_{t-1}, X_{t-2}, ...)
+
+처럼 memory를 필요로 할 가능성이 높다.
+
+따라서 manifold에 추가 physical information을 포함시키는 것은
+단순 feature expansion이 아니라,
+
+    "상태를 Markov state에 더 가깝게 만드는 과정"
+
+으로 볼 수 있다.
+
+
+4. 추가할 Physical Information
+------------------------------
+
+4.1 Dynamic atmospheric state
+
+- MSLP / surface pressure
+- Geopotential:
+    Z850
+    Z500
+    Z250
+- Wind:
+    U850, V850
+    U500, V500
+- Temperature:
+    T850
+    T500
+- Optional:
+    humidity
+    vertical velocity
+    total column variables
+
+역할:
+
+- synoptic structure
+- vertical atmospheric structure
+- flow-pressure relation
+- thermal configuration
+- hidden atmospheric state 보강
+
+
+4.2 Static geometry
+
+- terrain height
+- terrain slope
+- terrain aspect
+- sub-grid orography variance
+- orography anisotropy
+- land-sea mask
+- roughness
+
+역할:
+
+- 가능한 flow direction 제한
+- coastline / mountain barrier 표현
+- spatial manifold geometry 제공
+
+
+4.3 Slowly varying boundary state
+
+- SST
+- soil moisture
+- snow cover
+- sea ice
+
+역할:
+
+- long-timescale forcing
+- boundary condition
+- atmospheric transition probability conditioning
+
+
+5. 추천 1차 Manifold Input
+-------------------------
+
+초기에는 다음 정도가 적절하다.
+
+    C_t =
+    {
+        MSLP,
+        Z850,
+        Z500,
+        Z250,
+        U850,
+        V850,
+        terrain height,
+        terrain slope
+    }
+
+그 다음 단계에서
+
+    T850/T500,
+    U500/V500,
+    SST,
+    humidity
+
+등을 추가한다.
+
+핵심은 무작정 channel을 늘리는 것이 아니라,
+
+    pressure
+    ->
+    vertical structure
+    ->
+    flow
+    ->
+    terrain
+    ->
+    slow boundary
+
+의 순서로 state representation을 강화하는 것이다.
+
+
+6. A의 역할 재정의
+------------------
+
+기존:
+
+    X_t
+    ->
+    latent Z_t
+    ->
+    future prediction
+
+개선:
+
+    (X_t, C_t)
+    ->
+    Physical Probabilistic Manifold M_t
+    ->
+    stochastic transition / trajectory
+
+즉 A는 더 이상 단순 predictor가 아니라
+
+    Physical Probabilistic Stochastic Manifold Learner
+
+가 된다.
+
+
+7. 기본 Loss 구성
+-----------------
+
+기본 구조:
+
+    L_A
+    =
+    lambda_L2      * L_L2
+    +
+    lambda_vec     * L_vector
+    +
+    lambda_dist    * L_state_dist
+    +
+    lambda_phys    * L_phys_dist
+    +
+    lambda_trans   * L_transition
+    +
+    lambda_delta   * L_delta_dist
+    +
+    lambda_path    * L_path
+
+각 항은 서로 다른 역할을 담당한다.
+
+
+8. L2 Loss: Forecast Anchor
+---------------------------
+
+현재 4개 변수의 deterministic prediction을 유지한다.
+
+    L_L2
+    =
+    || X_hat_{t+1} - X_{t+1} ||_2^2
+
+역할:
+
+    "정확히 어디로 가야 하는가?"
+
+즉 manifold의 중심을 고정한다.
+
+장점:
+
+- stable prediction
+- short-range accuracy
+- deterministic anchor
+
+단점:
+
+- multi-modal future를 평균화할 수 있음
+- 과도하면 ensemble collapse 가능
+
+
+9. State Distribution Loss
+--------------------------
+
+미래 상태 자체의 분포를 맞춘다.
+
+K개의 ensemble member가 있을 때
+
+    X_hat_{t+1}^{(1)},
+    ...
+    X_hat_{t+1}^{(K)}
+
+에 대해
+
+    L_state_dist
+    =
+    D(
+        P_theta(X_{t+1}|X_t),
+        P_data(X_{t+1}|X_t)
+    )
+
+가능한 구현:
+
+- CRPS
+- Energy Score
+- MMD
+- Sliced Wasserstein
+- Sinkhorn divergence
+
+역할:
+
+    "가능한 미래 상태의 폭과 모양을 학습"
+
+
+10. Vector Field Loss
+---------------------
+
+vector field는 평균적인 이동 방향을 학습한다.
+
+    V_true(X_t)
+    =
+    (X_{t+1} - X_t) / Delta t
+
+    L_vector
+    =
+    || V_theta(X_t) - V_true(X_t) ||_2^2
+
+latent space에서는
+
+    L_vector_latent
+    =
+    || dZ_hat/dt - Delta Z_true ||_2^2
+
+로 둘 수 있다.
+
+중요한 해석:
+
+    V_theta(X_t)
+    ≈
+    E[X_{t+1} - X_t | X_t]
+
+즉 vector field는 conditional mean drift에 가깝다.
+
+역할:
+
+    "어느 방향으로 움직여야 하는가?"
+
+하지만 이것만으로는
+
+    "어느 방향들로 어떤 확률로 갈 수 있는가?"
+
+를 표현하지 못한다.
+
+
+11. Physical Information Distribution Loss
+------------------------------------------
+
+추가 physical information을 단순 reconstruct하지 않고,
+latent manifold가 그 physical structure를 보존하도록 만든다.
+
+예:
+
+    Z_A = f_A(X_t, C_t)
+
+그리고 projection:
+
+    H_z = g_z(Z_A)
+    H_c = g_c(C_t)
+
+loss:
+
+    L_phys_dist
+    =
+    D(
+        P(H_z),
+        P(H_c)
+    )
+
+가능한 방법:
+
+- MMD
+- Sliced Wasserstein
+- Sinkhorn
+- contrastive distribution alignment
+- mutual-information-based objective
+
+핵심 목적:
+
+    "개별 physical value를 맞추는 것이 아니라,
+     physical state들이 만드는 관계와 geometry를
+     latent manifold에서 보존"
+
+예:
+
+    (P,T,u,v)_A ≈ (P,T,u,v)_B
+
+이지만
+
+    Z500_A != Z500_B
+
+라면
+
+    Z_A != Z_B
+
+가 되도록 유도한다.
+
+즉 manifold를
+
+    surface appearance manifold
+
+에서
+
+    hidden physical configuration manifold
+
+로 확장한다.
+
+
+12. Information Distribution Loss를 사용하는 이유
+--------------------------------------------------
+
+Information distribution loss의 목적은 단순히 ensemble을 넓게 만드는 것이 아니다.
+
+핵심은
+
+    "어디로 퍼질 수 있고,
+     어디로 퍼지면 안 되는가"
+
+를 학습하는 것이다.
+
+L2는
+
+    pointwise target
+
+을 제공한다.
+
+Information / distribution loss는
+
+    hidden relation
+    geometry
+    probability structure
+
+를 제공한다.
+
+따라서
+
+    L2
+    ->
+    local / finite / goal-oriented constraint
+
+    Information distribution
+    ->
+    global / relational / probabilistic structure
+
+로 볼 수 있다.
+
+
+13. Random Variable에서 Random Process로 확장
+---------------------------------------------
+
+여기서 중요한 확장이 있다.
+
+추가 physical data는 한 시점의 random variable이 아니라,
+시간에 따라 변하는 time series이다.
+
+따라서
+
+    X_1, X_2, X_3, ...
+
+를 하나의 random process로 봐야 한다.
+
+단일 시점의 분포
+
+    P(X_t)
+
+만 맞추는 것으로는 충분하지 않다.
+
+실제로 필요한 것은
+
+    P(X_{t+1} | X_t)
+
+라는 transition probability이다.
+
+즉
+
+    X_t
+    ->
+    X_{t+1}
+    ->
+    X_{t+2}
+    ->
+    ...
+
+의 stochastic transition law를 학습해야 한다.
+
+
+14. Transition Distribution Loss
+--------------------------------
+
+모델이 conditional distribution
+
+    P_theta(X_{t+1} | X_t)
+
+를 생성하도록 한다.
+
+Loss:
+
+    L_transition
+    =
+    D(
+        P_theta(X_{t+1} | X_t),
+        P_data(X_{t+1} | X_t)
+    )
+
+역할:
+
+    "현재 상태에서 어떤 다음 상태들이
+     어떤 확률로 가능한가?"
+
+Vector field와의 차이:
+
+    Vector field:
+        평균 이동 방향
+
+    Transition distribution:
+        가능한 이동들의 전체 확률분포
+
+즉
+
+    E[Delta X_t | X_t]
+
+뿐만 아니라
+
+    Var(Delta X_t | X_t),
+    tail,
+    multimodality,
+    asymmetry
+
+등도 표현할 수 있어야 한다.
+
+
+15. Markov 구조와 상태 확장
+---------------------------
+
+이상적으로는
+
+    P(X_{0:T})
+    =
+    P(X_0)
+    Π_t P(X_{t+1}|X_t)
+
+와 같은 Markov structure를 사용할 수 있다.
+
+하지만 현재의
+
+    X_t = (MSLP, T2M, U10, V10)
+
+만으로는 hidden state가 많기 때문에
+Markov approximation이 약할 수 있다.
+
+실제로는
+
+    P(X_{t+1}|X_t,X_{t-1},...)
+
+가 더 정확할 수 있다.
+
+따라서 추가 physical information을 이용해
+
+    S_t =
+    {
+        surface variables,
+        geopotential,
+        pressure-level wind,
+        temperature,
+        terrain,
+        SST,
+        ...
+    }
+
+를 구성하면
+
+    P(S_{t+1}|S_t)
+
+라는 Markov approximation이 훨씬 타당해질 수 있다.
+
+즉 additional data는
+
+    prediction feature
+
+이면서 동시에
+
+    state completion
+
+의 역할을 한다.
+
+
+16. Delta-State Distribution Loss
+---------------------------------
+
+현재 연구에서는 dynamics가 약하고
+trajectory가 quasi-static해지는 문제가 중요하다.
+
+따라서
+
+    Delta X_t
+    =
+    X_{t+1} - X_t
+
+자체를 random variable로 취급한다.
+
+Loss:
+
+    L_delta_dist
+    =
+    D(
+        P_theta(Delta X_t | X_t),
+        P_data(Delta X_t | X_t)
+    )
+
+Vector loss는
+
+    E[Delta X_t | X_t]
+
+를 맞추는 데 가깝고,
+
+Delta distribution loss는
+
+    P(Delta X_t | X_t)
+
+전체를 맞춘다.
+
+따라서 다음을 동시에 학습할 수 있다.
+
+- mean tendency
+- variance of tendency
+- extreme changes
+- asymmetry
+- multi-modal transition
+
+이는 weak dynamics와 ensemble under-dispersion을 개선하는 데 중요하다.
+
+
+17. Path / Trajectory Distribution Loss
+---------------------------------------
+
+단일 transition만 맞추는 것으로는
+random process 전체를 학습했다고 보기 어렵다.
+
+따라서
+
+    X_t,
+    X_{t+1},
+    X_{t+2},
+    ...,
+    X_{t+H}
+
+의 joint trajectory distribution을 직접 고려한다.
+
+Loss:
+
+    L_path
+    =
+    D(
+        P_theta(X_{t+1:t+H}|X_t),
+        P_data(X_{t+1:t+H}|X_t)
+    )
+
+이 loss의 목적은
+
+    "한 step이 아니라 trajectory 전체의 확률법칙"
+
+을 학습하는 것이다.
+
+
+18. 120h Sliding Window와 Sample Path
+------------------------------------
+
+현재 사용 중인 120h trajectory dataset은
+이 stochastic-process loss와 잘 맞는다.
+
+예를 들어 6시간 간격이면
+
+    X_t,
+    X_{t+6},
+    X_{t+12},
+    ...,
+    X_{t+120}
+
+이 하나의 sample path가 된다.
+
+이를
+
+    omega_i
+    =
+    {X_t, X_{t+6}, ..., X_{t+120}}
+
+라고 하면,
+ERA5 sliding window dataset에서
+
+    omega_1,
+    omega_2,
+    ...,
+    omega_N
+
+이라는 sample path 집합을 얻는다.
+
+모델 역시
+
+    omega_hat_1,
+    ...
+    omega_hat_K
+
+를 생성할 수 있다.
+
+그리고
+
+    D(
+        P_theta(omega),
+        P_data(omega)
+    )
+
+를 최소화할 수 있다.
+
+이것이 random variable 수준의 distribution matching에서
+random process / path-space distribution matching으로의 확장이다.
+
+
+19. Stochastic Differential Equation 관점
+-----------------------------------------
+
+이 구조는 SDE와도 자연스럽게 연결된다.
+
+    dX_t
+    =
+    b(X_t) dt
+    +
+    sigma(X_t) dW_t
+
+여기서
+
+    b(X_t)
+    =
+    drift / deterministic tendency
+
+    sigma(X_t)
+    =
+    stochastic uncertainty / diffusion
+
+현재 loss들과 대응시키면
+
+    L_vector
+    ->
+    b(X_t)
+
+    L_transition,
+    L_delta_dist
+    ->
+    sigma(X_t) 및 transition kernel
+
+    L_path
+    ->
+    sample-path law
+
+와 연결해서 해석할 수 있다.
+
+즉 현재 설계는 단순한 deterministic vector field에서
+
+    stochastic vector field / stochastic flow
+
+로 확장되는 구조다.
+
+
+20. 전체 Loss의 최종 해석
+-------------------------
+
+최종적으로
+
+    L_A
+    =
+    lambda_L2    * L_L2
+    +
+    lambda_vec   * L_vector
+    +
+    lambda_dist  * L_state_dist
+    +
+    lambda_phys  * L_phys_dist
+    +
+    lambda_trans * L_transition
+    +
+    lambda_delta * L_delta_dist
+    +
+    lambda_path  * L_path
+
+각 항의 의미:
+
+    L_L2
+    =
+    정확히 어디에 있어야 하는가?
+
+    L_vector
+    =
+    평균적으로 어느 방향으로 움직이는가?
+
+    L_state_dist
+    =
+    가능한 미래 상태들의 전체 분포는 어떤가?
+
+    L_phys_dist
+    =
+    manifold가 실제 physical information의 geometry를 반영하는가?
+
+    L_transition
+    =
+    현재 상태에서 다음 상태로 갈 확률법칙은 무엇인가?
+
+    L_delta_dist
+    =
+    변화량 자체의 확률분포는 어떤가?
+
+    L_path
+    =
+    여러 step에 걸친 trajectory 전체의 확률법칙은 어떤가?
+
+
+21. Geometry 관점에서의 최종 해석
+--------------------------------
+
+최종 A-manifold는 다음 요소를 동시에 가진다.
+
+    Center / Anchor
+    ->
+    L2
+
+    Width / Probability Density
+    ->
+    State Distribution Loss
+
+    Tangent / Drift
+    ->
+    Vector Field Loss
+
+    Physical Geometry
+    ->
+    Physical Information Distribution Loss
+
+    Local Transition Kernel
+    ->
+    Transition Distribution Loss
+
+    Stochastic Increment
+    ->
+    Delta Distribution Loss
+
+    Global Temporal Law
+    ->
+    Path Distribution Loss
+
+
+22. 추천 학습 순서
+-----------------
+
+Stage 1:
+    L_L2
+
+목표:
+    deterministic forecast anchor 안정화
+
+
+Stage 2:
+    L_L2
+    +
+    lambda_vec * L_vector
+
+목표:
+    mean dynamics / tendency 강화
+
+
+Stage 3:
+    +
+    lambda_dist * L_state_dist
+
+목표:
+    state-space distribution과 ensemble spread 확보
+
+
+Stage 4:
+    +
+    lambda_phys * L_phys_dist
+
+목표:
+    additional physical information을 manifold geometry에 반영
+
+
+Stage 5:
+    +
+    lambda_trans * L_transition
+    +
+    lambda_delta * L_delta_dist
+
+목표:
+    stochastic local dynamics 학습
+
+
+Stage 6:
+    +
+    lambda_path * L_path
+
+목표:
+    multi-step stochastic process / sample-path law 학습
+
+
+23. 추천 Ablation
+-----------------
+
+A0:
+    현재 baseline
+
+A1:
+    + physical information
+
+A2:
+    + vector field loss
+
+A3:
+    + state distribution loss
+
+A4:
+    + physical information distribution loss
+
+A5:
+    + transition distribution loss
+
+A6:
+    + Delta-state distribution loss
+
+A7:
+    + path / trajectory distribution loss
+
+
+24. 평가 지표
+-------------
+
+24.1 Deterministic
+
+- RMSE
+- MAE
+- lead-time RMSE
+
+
+24.2 Probabilistic
+
+- CRPS
+- Energy Score
+- coverage_80
+- coverage_90
+- spread-skill ratio
+
+
+24.3 Dynamics
+
+- Delta-state RMSE
+- tendency correlation
+- temporal variance
+- trajectory RMSE
+- long-horizon drift
+
+
+24.4 Transition quality
+
+- conditional increment statistics
+- transition calibration
+- conditional variance
+- extreme-transition frequency
+
+
+24.5 Path quality
+
+- path-space distance
+- trajectory distribution similarity
+- autocorrelation structure
+- temporal spectrum
+- regime persistence
+- trajectory diversity
+
+
+24.6 Manifold quality
+
+- latent neighborhood consistency
+- physical regime separation
+- off-manifold projection magnitude
+- latent interpolation quality
+
+
+25. 핵심 가설
+-------------
+
+H1:
+추가 physical information은 surface state의 hidden ambiguity를 줄인다.
+
+H2:
+L2 + vector loss는 state accuracy와 mean dynamics를 유지한다.
+
+H3:
+state distribution loss는 manifold의 폭과 ensemble spread를 만든다.
+
+H4:
+physical information distribution loss는
+추가 ERA5 정보의 relational geometry를 latent manifold에 보존한다.
+
+H5:
+transition loss는
+P(X_{t+1}|X_t)를 직접 학습하여
+random-variable prediction을 random-process prediction으로 확장한다.
+
+H6:
+Delta distribution loss는
+weak dynamics와 under-dispersion을 줄인다.
+
+H7:
+path loss는
+단일 step accuracy가 아니라
+multi-step stochastic trajectory law를 개선한다.
+
+
+26. 최종 연구 방향
+-----------------
+
+기존:
+
+    partial surface state
+    ->
+    single deterministic future
+
+1차 개선:
+
+    richer physical state
+    ->
+    probabilistic manifold
+
+2차 개선:
+
+    probabilistic manifold
+    +
+    vector field
+
+3차 개선:
+
+    probabilistic manifold
+    +
+    stochastic transition kernel
+    +
+    path distribution
+
+최종:
+
+    Physical State
+    ->
+    Physical Probabilistic Manifold
+    ->
+    Stochastic Transition Process
+    ->
+    Ensemble Future Trajectories
+
+
+27. 핵심 요약
+-------------
+
+이번 확장의 가장 중요한 변화는 다음과 같다.
+
+기존 distribution learning:
+
+    P(X_t)
+
+새로운 stochastic-process learning:
+
+    P(X_{t+1}|X_t)
+
+그리고 최종적으로:
+
+    P(X_{t+1:t+H}|X_t)
+
+를 학습한다.
+
+즉 단순히
+
+    "어떤 미래 상태가 가능한가?"
+
+를 넘어서
+
+    "현재 상태에서 어떤 미래로,
+     어떤 확률로,
+     어떤 시간적 경로를 따라 이동하는가?"
+
+를 학습한다.
+
+이를 한 문장으로 정리하면:
+
+    "L2는 manifold의 중심을 고정하고,
+     distribution loss는 가능한 상태의 폭을 만들며,
+     physical-information loss는 그 공간의 물리적 geometry를 정하고,
+     vector loss는 평균 이동 방향을 만들고,
+     transition / delta / path loss는
+     그 manifold 위의 stochastic process 자체를 학습한다."
+
+28. Static Geometry vs Dynamic Random Field: Loss 역할 분리
+-----------------------------------------------------------
+
+추가 physical information을 모두 같은 loss로 처리하지 않는다.
+
+핵심 원칙:
+
+    Static / deterministic geometry
+    ->
+    L2 중심 제약
+
+    Dynamic / stochastic atmospheric field
+    ->
+    information / distribution loss 중심 제약
+
+즉
+
+    "고정된 물리적 경계는 정확하게 고정하고,
+     유동적인 대기장은 확률법칙으로 학습한다."
+
+라는 원칙을 사용한다.
+
+
+28.1 Static Geometry에는 강한 L2 Constraint
+-------------------------------------------
+
+다음 변수들은 시간에 따라 거의 변하지 않거나,
+예측 대상이라기보다 공간 geometry 자체를 정의한다.
+
+예:
+
+- terrain elevation
+- terrain slope
+- terrain aspect
+- land-sea mask
+- surface roughness
+- orography variance / anisotropy
+
+이들에는
+
+    L_static_L2
+    =
+    || G_hat - G_true ||_2^2
+
+와 같은 강한 deterministic constraint를 사용한다.
+
+역할:
+
+    manifold의 "벽, 바닥, 경계"를 정확히 고정
+
+즉 terrain은 확률적으로 넓게 퍼질 대상이 아니라,
+가능한 atmospheric state가 존재할 수 있는 공간을 제한하는 anchor이다.
+
+
+28.2 Dynamic Atmospheric Field에는 Distribution Constraint
+----------------------------------------------------------
+
+다음 변수들은 시간에 따라 이동, 발달, 약화되며
+random process로 취급하는 것이 더 자연스럽다.
+
+예:
+
+- MSLP
+- surface pressure
+- pressure anomaly
+- wind field
+- humidity
+- SST
+- pressure-level atmospheric field
+
+이들에는 단순 L2뿐 아니라
+conditional distribution loss를 강조한다.
+
+예:
+
+    L_P_dist
+    =
+    D(
+        P_theta(P_{t+1}|S_t),
+        P_data(P_{t+1}|S_t)
+    )
+
+그리고 변화량까지
+
+    Delta P_t
+    =
+    P_{t+1} - P_t
+
+에 대해
+
+    L_DeltaP_dist
+    =
+    D(
+        P_theta(Delta P_t|S_t),
+        P_data(Delta P_t|S_t)
+    )
+
+를 사용한다.
+
+즉 기압은 단순히
+
+    "정답값을 맞추는 field"
+
+가 아니라
+
+    "시간에 따라 확률적으로 변화하는 random field"
+
+로 학습한다.
+
+
+28.3 Pressure Distribution Loss의 역할
+--------------------------------------
+
+기압에 대한 L2는 다음을 담당한다.
+
+    정확한 평균 위치 / deterministic anchor
+
+반면 pressure distribution loss는
+
+- low/high pressure depth
+- pressure anomaly distribution
+- extreme pressure tails
+- pressure-gradient statistics
+- spatial pressure pattern
+- transition uncertainty
+
+를 보존하도록 유도한다.
+
+특히
+
+    P(Delta P_t | S_t)
+
+를 맞추는 것은 매우 중요하다.
+
+왜냐하면 단순한 pressure histogram은
+quasi-static field에서도 어느 정도 맞을 수 있지만,
+
+    Delta P_t
+
+의 분포를 맞추려면
+저기압의 발달, 약화, 이동 등
+실제 temporal dynamics가 필요하기 때문이다.
+
+
+28.4 Geopotential Height는 Static Elevation과 다르다
+---------------------------------------------------
+
+중요한 구분:
+
+    terrain elevation
+    !=
+    pressure-level geopotential height
+
+terrain elevation은 static geometry이므로
+강한 L2 constraint가 적절하다.
+
+반면
+
+    Z850(t)
+    Z500(t)
+    Z250(t)
+
+같은 geopotential height는
+시간에 따라 변하는 atmospheric state이다.
+
+따라서 geopotential height에는
+
+    L_Z_L2
+    +
+    L_Z_dist
+    +
+    L_DeltaZ_dist
+
+를 함께 사용하는 것이 적절하다.
+
+즉
+
+    terrain height
+    ->
+    deterministic geometric anchor
+
+    pressure-level geopotential height
+    ->
+    dynamic random field
+
+로 구분한다.
+
+
+28.5 변수별 추천 Loss
+--------------------
+
+1) Terrain elevation / slope / land-sea mask
+
+    Strong L2 / deterministic constraint
+
+2) MSLP / surface pressure
+
+    L2
+    +
+    pressure distribution loss
+    +
+    Delta-pressure distribution loss
+
+3) Z850 / Z500 / Z250
+
+    L2
+    +
+    state distribution loss
+    +
+    temporal / Delta-Z distribution loss
+
+4) Wind u, v
+
+    L2
+    +
+    vector-field loss
+    +
+    conditional distribution loss
+
+5) SST
+
+    weak/moderate L2
+    +
+    slow-transition distribution loss
+
+6) Humidity
+
+    conditional distribution loss
+    +
+    optional L2 anchor
+
+
+28.6 Updated A Loss
+-------------------
+
+이 원칙을 반영하면 전체 A loss는 다음처럼 정리할 수 있다.
+
+    L_A
+    =
+    lambda_static * L_static_L2
+    +
+    lambda_pred   * L_forecast_L2
+    +
+    lambda_vec    * L_vector
+    +
+    lambda_P      * L_P_dist
+    +
+    lambda_DeltaP * L_DeltaP_dist
+    +
+    lambda_state  * L_state_dist
+    +
+    lambda_phys   * L_phys_dist
+    +
+    lambda_trans  * L_transition
+    +
+    lambda_delta  * L_delta_dist
+    +
+    lambda_path   * L_path
+
+여기서
+
+    L_static_L2
+    ->
+    manifold의 고정 geometry
+
+    L_forecast_L2
+    ->
+    deterministic forecast anchor
+
+    L_P_dist / L_DeltaP_dist
+    ->
+    pressure random field와 pressure dynamics
+
+    L_vector
+    ->
+    mean tangent / drift
+
+    L_transition
+    ->
+    local stochastic transition law
+
+    L_path
+    ->
+    multi-step random process law
+
+
+28.7 최종 직관
+-------------
+
+전체 구조를 직관적으로 보면 다음과 같다.
+
+    Terrain / static geometry
+    ->
+    manifold의 벽과 바닥
+
+    Pressure / dynamic distribution
+    ->
+    manifold 위에서 가능한 상태들의 밀도와 폭
+
+    Vector field
+    ->
+    가능한 상태가 이동하는 평균 방향
+
+    Transition / Delta distribution
+    ->
+    어느 방향으로 어느 정도 확률로 움직일 수 있는가
+
+    Path distribution
+    ->
+    장시간 동안 어떤 stochastic trajectory가 가능한가
+
+따라서 현재 설계의 핵심 철학은 다음과 같다.
+
+    "Static geometry는 L2로 정확하게 고정하고,
+     dynamic atmospheric field는 distribution loss로 확률구조를 보존하며,
+     vector / transition / path loss로 시간적 stochastic dynamics를 학습한다."
+

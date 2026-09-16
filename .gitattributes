@@ -2,3 +2,7 @@ download/flow-matching/**/*.pt filter=lfs diff=lfs merge=lfs -text
 docs/results/**/*.pt filter=lfs diff=lfs merge=lfs -text
 docs/results/**/*.npz filter=lfs diff=lfs merge=lfs -text
 docs/results/**/*.mp4 filter=lfs diff=lfs merge=lfs -text
+# Small reproducible A-information smoke artifacts are stored directly in Git.
+# This narrow exception does not change existing experiment/checkpoint storage.
+docs/results/a-information-process-smoke/**/*.mp4 -filter -diff -merge -text
+docs/results/a-information-process-smoke/**/*.npz -filter -diff -merge -text

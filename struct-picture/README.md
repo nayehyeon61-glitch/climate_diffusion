@@ -1,5 +1,13 @@
 # Climate Flow: Manifold MoE, Full-state MoE 및 Dynamics 구조
 
+## 분리형 A information/process 보강 (2026-09-16)
+
+- [16-separate-a-information-process.md](16-separate-a-information-process.md): A 전용 확률 sampler, 정보 가용시간, B 동결과 두 시간축
+- [처음부터 실행하는 매뉴얼](../flow-matching_moe/A_INFORMATION_TRAINING_MANUAL.md)
+- [합성 검증과 한계](../docs/results/a-information-process-smoke/README.md)
+
+A/B는 분리한다. 이 브랜치는 joint-ab가 아니라 아래 optimization/physical-recurrent 계보를 잇는다.
+
 ## 물리시간 재귀 residual FM (2026-09-11)
 
 - [13-physical-recurrent-training.md](13-physical-recurrent-training.md): A/B/C, full120h BPTT, 두 시간축과 shape

@@ -1,5 +1,15 @@
 # Climate Diffusion: Latent Dynamics + Flow Matching
 
+## 이 브랜치: 분리형 A 정보·확률과정 보강
+
+`feature/a-manifold-information-process`는 A/B 분리를 유지한다. A에 Z850/Z500/Z250,
+U850/V850, 지형 고도·경사를 별도 conditioning으로 추가하고 surface 출력4변수는 유지한다.
+**[처음부터 학습하는 전체 매뉴얼](flow-matching_moe/A_INFORMATION_TRAINING_MANUAL.md)**에서
+입력 준비 → A curriculum/감사 → frozen-A B → C → 평가/모든 member 영상을 순서대로 실행한다.
+[Mermaid](struct-picture/16-separate-a-information-process.md),
+[실행한 합성 결과와 미검증 범위](docs/results/a-information-process-smoke/README.md)를 함께 확인한다.
+실제 ERA5 추가 입력/재학습 성능은 아직 검증하지 않았다. 아래 기존 trainer 경로도 보존한다.
+
 이 저장소는 기상장 state를 생성하는 conditional flow matching 모델을 제공합니다.
 현재 branch에는 고정 간격 기상장의 물리 시간 latent dynamics trainer와 기존 월별 trainer가
 함께 있습니다. 월별 경로는 `typnonn_preesure_data_loader`의 기상장·통합 태풍 표를 사용합니다. Google WeatherNext2 원본 runner는
