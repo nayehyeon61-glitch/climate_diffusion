@@ -10,36 +10,63 @@
 이 스크립트는 ERA5를 다운로드하거나 RunPod/GPU를 생성하지 않는다.
 
 ```bash
-GIT_LFS_SKIP_SMUDGE=1 git clone --single-branch --branch feature/a-manifold-information-process \
-  https://github.com/nayehyeon61-glitch/climate_diffusion.git climate_A_information
-cd climate_A_information
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -e '.[test,plots,io]'
-# Ubuntu/RunPod에서 MP4 출력에 ffmpeg가 없다면 설치
-apt-get update
-apt-get install -y ffmpeg
-
+bash <<'BASH'
+set -euo pipefail
+# 이 두 원본 데이터는 먼저 준비한다. 다운로드/자동 재격자화 명령이 아니다.
 export ARCHIVE=/workspace/data/era5-temporal-6h.npz
 export INFO_FIELDS=/workspace/data/era5-extra-aligned.nc
 export INFO=/workspace/data/era5-information-v1.npz
-export RUN=/workspace/experiments/a-information-run-001
-export MODE=enriched DEVICE=cuda
-export M=4 TAU=4 BATCH=2
+RUN_TAG="$(date -u +%Y%m%dT%H%M%SZ)"
+export RUN="/workspace/experiments/a-information-full-${RUN_TAG}"
 
-bash scripts/run_a_information_120h.sh preflight
-bash scripts/run_a_information_120h.sh A
-bash scripts/run_a_information_120h.sh audit
-# a-audit.json, a.metrics.json, a.metadata.json을 확인한 뒤에만 B로 진행
-bash scripts/run_a_information_120h.sh B
-bash scripts/run_a_information_120h.sh C
-bash scripts/run_a_information_120h.sh validation
-bash scripts/run_a_information_120h.sh render
-# validation에서 설정을 확정한 뒤 마지막으로 실행
-bash scripts/run_a_information_120h.sh test
+GIT_LFS_SKIP_SMUDGE=1 git clone --single-branch --branch feature/a-manifold-information-process \
+  https://github.com/nayehyeon61-glitch/climate_diffusion.git "climate_A_information_${RUN_TAG}"
+cd "climate_A_information_${RUN_TAG}"
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[test,plots,io]'
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  if [ "$(id -u)" -eq 0 ]; then
+    apt-get update
+    apt-get install -y ffmpeg
+  else
+    sudo apt-get update
+    sudo apt-get install -y ffmpeg
+  fi
+fi
+python -c 'import torch; print(torch.__version__); assert torch.cuda.is_available(), "CUDA 환경을 확인하세요"'
+
+export MODE=enriched PROFILE=process DEVICE=cuda
+export M=4 TAU=4 BATCH=2
+export MAX_WINDOWS=0 WINDOW_STRIDE=1 SEED=7 LR=0.001
+export A_EPOCHS=60 CURRICULUM_INTERVAL=4 B_EPOCHS=30 C_EPOCHS=10
+export B_MEMBER_WEIGHT=0.001 EVAL_CASES=0 AUDIT_SPLIT=expert_validation
+mkdir -p "$RUN"
+run_stage() { bash scripts/run_a_information_120h.sh "$1" 2>&1 | tee "$RUN/$1.log"; }
+
+run_stage preflight
+run_stage A
+run_stage audit
+python -m json.tool "$RUN/a-audit.json"
+read -r -p "A 감사 결과 확인 후 B→C를 진행하려면 yes: " answer </dev/tty
+if [ "$answer" != yes ]; then echo "A까지 저장: $RUN"; exit 0; fi
+run_stage B
+run_stage C
+run_stage validation
+run_stage render
+echo "학습·validation·member 영상: $RUN"
+# Test는 계수 선택에 사용하지 않는다.
+read -r -p "설정을 확정하고 최종 test를 실행하려면 yes: " answer </dev/tty
+if [ "$answer" = yes ]; then run_stage test; fi
+echo "결과 위치: $RUN"
+BASH
 ```
 
 기본 epoch A60/B30/C10, A curriculum 간격4는 **실행 가능한 후보**이지 ERA5 검증 최적값이 아니다.
+위 블록은 전체 origin stride1, 학습 window 상한0(제한 없음), 전체 evaluation case0을 명시한다.
+runner 단독 기본값은 stride4/EVAL_CASES32다. 전체 평가도 겹치는 origin을 포함하므로 독립 사건 수가 아니다.
+`read`는 interactive terminal에서만 사용한다. 비대화형 작업에서는 단계별 명령을 따로 실행하고
+A 감사/최종 test 승인은 작업자가 별도로 결정한다. 모델은 **6h×20=120h**로 고정된다.
 선행 synthetic 확인은 GPU 없이 다음으로 실행한다. 출력 폴더는 반드시 새 이름을 사용한다.
 
 ```bash
@@ -170,7 +197,9 @@ noise identity만 공유한다고 joint law/Markov성/보정된 ensemble이 보�
 stateCRPS + transitionCRPS + .1 pathEnergy + .1 mean-state-MSE, A는 reconstruction + .05(AEdelta+drift)를 추가한다.
 train은 train split, A/B 선택은 expert_validation, C 학습은 calibration, C 선택은 validation이다.
 
-`audit`는 validation 고유 관측쌍으로 **AE delta → drift-only delta → tangent oracle**을 분해한다.
+`audit`는 기본 expert_validation 고유 관측쌍으로 **AE delta → drift-only delta → tangent oracle**을 분해한다.
+A 튜닝/진행 판단에는 이 split을 사용하고, C 선택용 validation을 미리 소비하지 않는다.
+과거 validation 감사 재현이 필요할 때만 `AUDIT_SPLIT=validation` 또는 audit CLI의 `--split validation`을 명시한다.
 AE 양 endpoint에 정답을 넣는 것은 geometry 감사이지 inference가 아니다. tangent least-squares는 instantaneous Jb가
 담을 수 있는 방향을 검사하며 learned 6h drift skill로 해석하지 않는다. full MoE는 뒤의 validation/member JSON으로 비교한다.
 
@@ -203,6 +232,11 @@ C는 member weight0, temporal ramp3, 기존 marginal Energy .5+CRPS .5, PI .5, r
 **A의 새 fair state/transition/info CRPS curriculum 전체를 C에 옮긴 Loss V2가 아니다.**
 기본 LR .001이면 C process .0001, representation .00001. Reference anchor에 information encoder도 포함한다.
 B의 frozen A tensor는 저장 전 bitwise 비교하며, decoder 입력 q의 gradient는 차단하지 않는다.
+로그의 `weighted_*`를 합하면 실제 `loss`가 된다(부동소수점 반올림 허용).
+`weighted_specialization`은 기존 expert/FM/gate objective 전체다. C에는 추가로
+`weighted_marginal_energy/crps`, `weighted_pi`, `weighted_anchor`가 기록된다.
+계산된 `state_crps`, `transition_crps`, `static_l2`, `decoded_drift` 등의 이름만으로
+B/C에서 그 항이 직접 최적화된다고 해석하면 안 된다. 예를 들어 C의 static L2는 진단용이다.
 
 ## 6. 평가 / 한 번 예측 / 모든 member 출력
 
@@ -210,6 +244,10 @@ B의 frozen A tensor는 저장 전 bitwise 비교하며, decoder 입력 q의 gra
 모든 member를 한 번만 저장한다. `validation.json`은 선택된 여러 origin의 aggregate이며 첫 member 지표와 구별한다.
 per-variable state/tendency error, fair state/transition CRPS, joint Energy, mean/member 분산, coverage80,
 drift/residual/final q/day norm, generated routing/entropy/candidate cosine/projection ratio/chart distance를 확인한다.
+2026-09-21 보수 이후 aggregate RMSE는 `sqrt(mean(case mean_state))`, spread는
+`sqrt(mean(case ensemble_variance))`다. 기존 case별 RMS의 산술평균은 `mean_case_rmse`,
+`mean_case_spread`, `mean_case_persistence_rmse`에 보존한다. 이 집계 변경은 모델 성능 개선이 아니다.
+RMSE는 train state scale로 정규화된 변수·면적 가중 값이며 Pa/K/m/s의 원시 단위를 섞은 norm이 아니다.
 풍향은 기존 u/v 기반 convention/calm mask를 재사용하며 출력은 u/v를 유지한다.
 
 ```bash
@@ -242,6 +280,8 @@ full 실행은 새 RUN에 `MAX_WINDOWS=0`, A60/interval4/B30/C10 등 후보를 �
 singleton 마지막 batch는 이전 batch에 합쳐져 peak batch가 설정값+1일 수 있다.
 OOM이면 BATCH를2까지, 보조 실험으로 M2/tau2 또는 입력격자를 줄이고 **새 run과 변경 설정**으로 비교한다.
 window 수를 줄이면 총시간은 줄지만 단일 batch peak-memory는 거의 줄지 않는다.
+`MAX_WINDOWS=1` 또는 stride 선택 후 window가1개뿐인 split은 명시적으로 실패한다.
+기존처럼 임의로 첫2개 window로 대체하지 않는다. `MAX_WINDOWS=0` 또는2이상, 더 작은 stride를 사용한다.
 loss/gradient audit는 첫 batch에서 추가 backward graph 조회 비용이 든다. 직접 CLI에서 `--gradient-audit`를 생략할 수 있다.
 매 epoch runtime/maxRSS/CUDA peak bytes를 기록한다. CPU MaxRSS는 프로세스 누적 최대이며 GPU 예산으로 환산하지 않는다.
 

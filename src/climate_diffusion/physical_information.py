@@ -48,7 +48,10 @@ def prepare(archive,fields,output,optional=()):
     if output.suffix!='.npz':raise ValueError('Information output must end in .npz')
     if output.exists(): raise FileExistsError(output)
     _,times,schema=load_moe_archive(archive)
-    if set(optional)-set(OPTIONAL): raise ValueError('Unsupported optional variable')
+    if set(optional)-set(OPTIONAL) or len(optional)!=len(set(optional)):
+        raise ValueError('Unsupported or duplicate optional variable')
+    if schema['forecast_step_hours']!=6:
+        raise ValueError('Physical information requires an exact 6h surface archive')
     coords=schema['variables'][0]['coords']; names=list(PRIMARY)+list(optional)
     arrays=[]; metadata=[]
     with xr.open_dataset(fields) as ds:
@@ -116,7 +119,8 @@ def load_information(path,archive,times,schema):
             if v['unit'] not in expected:raise ValueError('Noncanonical information units')
             pressure=int(name[1:]) if name[0] in 'zutvq' and name[1:].isdigit() else None
             if v['pressure_hpa']!=pressure:raise ValueError('Information pressure level mismatch')
-            if (v['kind']=='static')!=v['name'].startswith('terrain_'):raise ValueError('Static/dynamic schema mismatch')
+            expected_kind='static' if name.startswith('terrain_') else 'dynamic'
+            if v['kind']!=expected_kind:raise ValueError('Static/dynamic schema mismatch')
             if v['kind']=='static' and not np.all(data[:,i*cells:(i+1)*cells]==data[:1,i*cells:(i+1)*cells]):
                 raise ValueError('Static terrain changes in time')
     return data,meta

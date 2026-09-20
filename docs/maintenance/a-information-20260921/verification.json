@@ -1,0 +1,62 @@
+{
+  "scope": "CPU synthetic maintenance regression; NOT ERA5 skill validation",
+  "torch_version": "2.14.0+cpu",
+  "cuda_available": false,
+  "stages": {
+    "A": {
+      "tensors_bitwise_equal": true,
+      "tensor_count": 113,
+      "epochs": 6,
+      "best_epoch": 6,
+      "loss_and_selection_exact": true,
+      "weighted_sum_max_error": 9.072391549125314e-07,
+      "checkpoint_sha256": "b4ed0fbfe53c324b8978f012663f295282603f4f458d1b166b39b715dc67e5ac",
+      "runtime_seconds": 3.7212438239999983,
+      "max_rss_kib": 485900
+    },
+    "B": {
+      "tensors_bitwise_equal": true,
+      "tensor_count": 113,
+      "epochs": 2,
+      "best_epoch": 2,
+      "loss_and_selection_exact": true,
+      "weighted_sum_max_error": 1.7786805983632803e-07,
+      "checkpoint_sha256": "ecb5614665ea9757036b60e454bf883925412d616ac0c81c207136138179cb27",
+      "runtime_seconds": 8.999366896000083,
+      "max_rss_kib": 529056
+    },
+    "C": {
+      "tensors_bitwise_equal": true,
+      "tensor_count": 113,
+      "epochs": 2,
+      "best_epoch": 1,
+      "loss_and_selection_exact": true,
+      "weighted_sum_max_error": 5.685932364940527e-07,
+      "checkpoint_sha256": "2d5f9c4cb661d779fd47f3586f79725d632a401b1135c232acc587996a3d26d6",
+      "runtime_seconds": 20.31923196999992,
+      "max_rss_kib": 533024
+    }
+  },
+  "frozen_B_tensor_count": 77,
+  "forecast_bitwise_equal": true,
+  "shape": [
+    4,
+    20,
+    128
+  ],
+  "all_member_exact_6h_12h_prefix": true,
+  "frame_counts": {
+    "6": [
+      20,
+      20,
+      20,
+      20
+    ],
+    "12": [
+      10,
+      10,
+      10,
+      10
+    ]
+  }
+}

@@ -101,7 +101,7 @@ class InformationProcess(nn.Module):
         paths=[origin[:,None].expand(-1,members,-1)];qs=[q.reshape(b,members,r)]
         for j in range(steps):
             prev=q;hours=q.new_full((len(q),),j*self.config.step_hours)
-            if auxiliary:
+            if auxiliary and not drift_only:
                 z=q*self.core.latent_scale+self.core.latent_mean
                 residual=noise.reshape(b*members,r)*self.config.residual_noise_std
                 for k in range(tau_steps):
@@ -110,7 +110,6 @@ class InformationProcess(nn.Module):
                     v2=self.auxiliary_field(residual+v/(2*tau_steps),z,context,tau+.5/tau_steps,hours)
                     residual=residual+v2/tau_steps
                 residual=residual/self.core.latent_scale
-                if drift_only:residual=torch.zeros_like(residual)
                 drift=drift_per_day(self.core,q)
                 q=q+self.config.step_hours/24*(drift+residual)
                 decomposition={'drift_per_day':drift,'residual_per_day':residual,'final_per_day':drift+residual}
@@ -196,7 +195,8 @@ class InformationProcess(nn.Module):
         v['state_crps']=fair_crps(generated[:,:,1:],truth[:,1:],t.metric)
         v['transition_crps']=fair_crps(ds,dy,t.metric)
         v['mean_state']=((generated[:,:,1:].mean(1)-truth[:,1:]).square()*t.metric).sum(-1).mean()
-        v['rmse']=v['mean_state'].sqrt();v['spread']=(generated[:,:,1:].var(1,unbiased=False)*t.metric).sum(-1).mean().sqrt()
+        v['ensemble_variance']=(generated[:,:,1:].var(1,unbiased=False)*t.metric).sum(-1).mean()
+        v['rmse']=v['mean_state'].sqrt();v['spread']=v['ensemble_variance'].sqrt()
         lo,hi=generated[:,:,1:].quantile(.1,dim=1),generated[:,:,1:].quantile(.9,dim=1)
         v['coverage80']=(((truth[:,1:]>=lo)&(truth[:,1:]<=hi)).to(generated)*t.metric).sum(-1).mean()
         cells=self.config.grid[1]*self.config.grid[2]

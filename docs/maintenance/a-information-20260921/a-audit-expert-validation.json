@@ -1,0 +1,48 @@
+{
+  "checkpoint": "outputs/maintenance-after/process-A.pt",
+  "split": "expert_validation",
+  "unique_pairs": 20,
+  "per_variable": {
+    "msl": {
+      "truth_rms_per_hour": 19.024839401245117,
+      "zero_tendency_rmse": 19.024839401245117,
+      "ae_rmse_per_hour": 18.996856689453125,
+      "ae_amplitude_ratio": 0.04448425083174637,
+      "drift_rmse_per_hour": 19.029632568359375,
+      "drift_amplitude_ratio": 0.038361331200226174,
+      "tangent_oracle_rmse_per_hour": 18.734830856323242,
+      "tangent_oracle_amplitude_ratio": 0.26887260959076126
+    },
+    "t2m": {
+      "truth_rms_per_hour": 0.10966990143060684,
+      "zero_tendency_rmse": 0.10966990143060684,
+      "ae_rmse_per_hour": 0.10963143408298492,
+      "ae_amplitude_ratio": 0.03249016450464668,
+      "drift_rmse_per_hour": 0.10985117405653,
+      "drift_amplitude_ratio": 0.03609673925560025,
+      "tangent_oracle_rmse_per_hour": 0.10656782239675522,
+      "tangent_oracle_amplitude_ratio": 0.19388229131884635
+    },
+    "u10": {
+      "truth_rms_per_hour": 0.17306438088417053,
+      "zero_tendency_rmse": 0.17306438088417053,
+      "ae_rmse_per_hour": 0.17154575884342194,
+      "ae_amplitude_ratio": 0.04525388267625864,
+      "drift_rmse_per_hour": 0.17348282039165497,
+      "drift_amplitude_ratio": 0.037272853128174466,
+      "tangent_oracle_rmse_per_hour": 0.15517258644104004,
+      "tangent_oracle_amplitude_ratio": 0.27129914068644173
+    },
+    "v10": {
+      "truth_rms_per_hour": 0.15524977445602417,
+      "zero_tendency_rmse": 0.15524977445602417,
+      "ae_rmse_per_hour": 0.15574583411216736,
+      "ae_amplitude_ratio": 0.03879791402156674,
+      "drift_rmse_per_hour": 0.15550754964351654,
+      "drift_amplitude_ratio": 0.033627905442708626,
+      "tangent_oracle_rmse_per_hour": 0.15717622637748718,
+      "tangent_oracle_amplitude_ratio": 0.2652981157994194
+    }
+  },
+  "interpretation": "AE uses both observed endpoints; oracle geometry test, NOT forecast. Tangent is instantaneous least-squares direction oracle in per-variable/area metric; not a learned 6h drift. Origin information remains fixed within each window, including future surface encoder labels."
+}

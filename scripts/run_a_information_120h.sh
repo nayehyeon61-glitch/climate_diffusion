@@ -6,6 +6,7 @@ stage="${1:?Choose preflight|A|audit|B|C|validation|render|test}"
 : "${RUN:?Choose a NEW run directory}"
 PYTHON="${PYTHON:-python}"
 MODE="${MODE:-enriched}"
+case "$MODE" in enriched|surface) ;; *) echo 'MODE must be enriched or surface' >&2; exit 2;; esac
 DEVICE="${DEVICE:-cpu}"
 M="${M:-4}"; TAU="${TAU:-4}"
 HISTORY_STRIDE="${HISTORY_STRIDE:-4}"
@@ -45,7 +46,8 @@ case "$stage" in
     ;;
   audit)
     "$PYTHON" scripts/audit_information_process.py --checkpoint "$RUN/a.pt" --archive "$ARCHIVE" \
-      "${info[@]}" --output "$RUN/a-audit.json" --max-pairs "${AUDIT_PAIRS:-64}"
+      "${info[@]}" --output "$RUN/a-audit.json" --max-pairs "${AUDIT_PAIRS:-64}" \
+      --split "${AUDIT_SPLIT:-expert_validation}"
     ;;
   B|C)
     if [[ "$stage" == B ]]; then parent=a; target=b; epochs="${B_EPOCHS:-30}"; else parent=b; target=c; epochs="${C_EPOCHS:-10}"; fi

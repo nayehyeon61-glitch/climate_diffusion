@@ -149,3 +149,127 @@ def test_extra_information_really_conditions_A(prepared):
     z=m.rollout(b['history'],changed,auxiliary=True,noise=noise,steps=2)
     assert torch.equal(a[:,:,0],z[:,:,0])  # observed origin offset is preserved
     assert not torch.allclose(a[:,:,1:],z[:,:,1:])
+
+
+def test_pooled_rms_is_not_mean_case_rms():
+    from climate_diffusion.information_forecast import aggregate_scores
+    rows=[dict(rmse=error,mean_state=error**2,spread=spread,ensemble_variance=spread**2,
+               persistence_rmse=error,persistence_mse=error**2,state_crps=error)
+          for error,spread in ((1.,2.),(3.,4.))]
+    scores=aggregate_scores(rows)
+    assert scores['rmse']==pytest.approx(np.sqrt(5))
+    assert scores['persistence_rmse']==pytest.approx(np.sqrt(5))
+    assert scores['spread']==pytest.approx(np.sqrt(10))
+    assert scores['mean_case_rmse']==2 and scores['mean_case_spread']==3
+    assert scores['state_crps']==2
+    with pytest.raises(ValueError,match='No held-out'):aggregate_scores([])
+
+
+def test_report_cannot_overwrite_forecast(tmp_path):
+    from climate_diffusion.information_forecast import evaluate
+    output=tmp_path/'same.npz'
+    with pytest.raises(ValueError,match='distinct'):
+        evaluate('not-read.pt','not-read.npz',output,forecast_output=output)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize('stage',['A','B','C'])
+def test_logged_weights_reproduce_loss_and_stage_gradients(prepared,stage):
+    from types import SimpleNamespace
+    from climate_diffusion.train_information_process import batch_loss
+    m,b,d,_,_=prepared
+    if stage!='A':
+        m.seal(torch.tensor((d['states'][:d['train_end']]-d['mean'])/d['scale']),
+               torch.tensor(d['information'][:d['train_end']]))
+    m.set_phase(stage)
+    before={k:v.clone() for k,v in m.state_dict().items()}
+    args=SimpleNamespace(members=2,tau_steps=1,curriculum_interval=1,profile='process',
+                         loss_weights=None,info_scale=d['information_scale'],
+                         info_tendency_scale=d['information_tendency_scale'],b_member_weight=.001)
+    streams={k:torch.Generator().manual_seed(seed) for k,seed in [('fm',11),('ensemble',29)]}
+    values=batch_loss(m,b,args,6,streams)
+    summed=sum(v for k,v in values.items() if k.startswith('weighted_'))
+    assert torch.allclose(summed,values['loss'],rtol=1e-6,atol=1e-6)
+    if stage=='A':
+        for k in ('state_crps','transition_crps','loss_trajectory','static_l2','info_distribution'):
+            assert values['weighted_'+k].abs()>0
+        assert 'weighted_specialization' not in values
+    else:
+        assert 'weighted_specialization' in values
+        assert 'weighted_state_crps' not in values  # computed diagnostic, NOT A's objective
+        assert 'weighted_transition_crps' not in values
+    if stage=='C':
+        assert values['weighted_loss_delta_member']==0
+        assert 'weighted_marginal_crps' in values and 'weighted_pi' in values
+        assert 'weighted_static_l2' not in values  # not implicitly adding A curriculum to C
+    values['loss'].backward()
+    modules={'representation':m.core.manifold,'information':m.information,
+             'experts':m.core.experts,'gate':m.core.gate,'history':m.core.history_encoder,
+             'auxiliary':m.a_sampler}
+    for name,module in modules.items():
+        active=(name in ('representation','information','auxiliary') if stage=='A' else
+                name in ('experts','gate','history') if stage=='B' else name!='auxiliary')
+        grads=[p.grad for p in module.parameters() if p.grad is not None]
+        assert bool(grads)==active,(stage,name)
+        if active:
+            assert all(torch.isfinite(g).all() for g in grads)
+            assert sum(g.abs().sum() for g in grads)>0
+    opt=torch.optim.AdamW([p for p in m.parameters() if p.requires_grad],lr=1e-4)
+    opt.step()
+    if stage=='B':
+        prefixes=('core.experts.','core.gate.correction.','core.history_encoder.')
+        assert all(torch.equal(value,m.state_dict()[name]) for name,value in before.items()
+                   if not name.startswith(prefixes))
+
+
+def test_A_drift_only_skips_auxiliary_sampler(prepared,monkeypatch):
+    m,b,_,_,_=prepared
+    def forbidden(*args,**kwargs):raise AssertionError('drift-only evaluated stochastic sampler')
+    monkeypatch.setattr(m,'auxiliary_field',forbidden)
+    trace=[]
+    path=m.rollout(b['history'],b['information'],auxiliary=True,drift_only=True,trace=trace)
+    assert path.shape==(2,4,21,128)
+    assert torch.equal(path[:,0],path[:,1])
+    assert torch.equal(trace[1]['input'],trace[0]['output'])
+    assert all(torch.count_nonzero(t['residual_per_day'])==0 for t in trace)
+    path[:,:,-1].square().mean().backward()
+    assert any(p.grad is not None and p.grad.abs().sum()>0 for p in m.core.manifold.latent_drift.parameters())
+
+
+def test_information_static_dynamic_labels_and_duplicate_options(prepared,tmp_path):
+    _,_,d,archive,info=prepared
+    with np.load(info) as f:payload={k:f[k] for k in f.files}
+    meta=json.loads(str(payload['metadata_json']))
+    meta['variables'][0]['kind']='unknown'
+    payload['metadata_json']=json.dumps(meta)
+    bad=tmp_path/'kind.npz';np.savez_compressed(bad,**payload)
+    with pytest.raises(ValueError,match='Static/dynamic'):
+        load_information(bad,archive,d['times'],d['schema'])
+    with pytest.raises(ValueError,match='duplicate'):
+        prepare(archive,tmp_path/'synthetic-information.nc',tmp_path/'duplicate.npz',optional=['t850','t850'])
+    assert not (tmp_path/'duplicate.npz').exists()
+
+
+def test_static_excluded_from_probabilistic_scores(prepared):
+    m,b,d,_,_=prepared
+    _,q=m.rollout(b['history'],b['information'],auxiliary=True,members=2,tau_steps=1,return_q=True)
+    args=(q,b['information'],b['information_targets'],b['dt_hours'],
+          torch.tensor(d['information_scale']),torch.tensor(d['information_tendency_scale']))
+    before=m.information_scores(*args)
+    changed=b['information_targets'].clone();changed[:,:,5*32:]+=9999
+    after=m.information_scores(q,b['information'],changed,*args[3:])
+    assert all(torch.equal(before[k],after[k]) for k in before)
+    assert not any('terrain' in k for k in before)
+    grad=torch.autograd.grad(before['info_distribution'],list(m.information.parameters()),retain_graph=True)
+    assert sum(g.abs().sum() for g in grad)>0
+
+
+def test_invalid_sampling_and_audit_guard(tmp_path):
+    from climate_diffusion.train_information_process import main
+    from audit_information_process import audit
+    with pytest.raises(ValueError,match='max_windows'):
+        main(['--archive','not-read.npz','--output',str(tmp_path/'new.pt'),'--stage','A','--max-windows','1'])
+    with pytest.raises(ValueError,match='max_pairs'):
+        audit('not-read.pt','not-read.npz',tmp_path/'audit.json',max_pairs=0)
+    with pytest.raises(ValueError,match='never test'):
+        audit('not-read.pt','not-read.npz',tmp_path/'audit.json',split='test')

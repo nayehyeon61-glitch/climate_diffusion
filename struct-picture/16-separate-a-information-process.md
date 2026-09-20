@@ -23,11 +23,13 @@ flowchart TB
     FT -. "감독만" .-> IL
     AL -. "gradient: A만" .-> Z
     AL -. "gradient" .-> AUX
-    DL --> BEST["phase6 이후 best A + quality audit"]
+    DL --> BEST["phase6 이후 expert_validation best A"]
     IL --> BEST
     AL --> BEST
-    BEST --> SEAL["train-only affine / chart / reference seal 1회"]
-    SEAL --> B["B: 새 experts / gate / history 학습; A frozen"]
+    BEST --> QUALITY["사용자 지정 dynamics threshold 검사"]
+    QUALITY --> SEAL["train-only affine / chart / reference seal 1회"]
+    SEAL --> AUDIT["저장된 A의 expert_validation AE / drift / tangent 감사"]
+    AUDIT --> B["B: 새 experts / gate / history 학습; A frozen"]
     B --> CAL["C: calibration split; 작은 representation LR + anchor"]
     CAL --> OUT["동일 저장 forecast → 모든 member 6h / 12h 영상"]
 ```
@@ -38,7 +40,7 @@ A sampler/context/info head는 auxiliary다. B/C forecast는 이 sampler 대신 
 ## 두 시간축 / 하나의 member 경로
 
 ```mermaid
-flowchart LR
+flowchart TB
     C0["origin C / history 고정"] --> CT["조건 context"]
     Q["member m의 현재 physical q_j"] --> GEO["decoder/Jacobian 공통 geometry"]
     N["같은 member의 base noise epsilon_m"] --> RT["잔차 공간 r_tau"]
@@ -79,3 +81,11 @@ flowchart TB
 미래 labels→encoder conditioning 화살표는 없다. teacher-forced FM은 별도 one-step 감독으로만 현재/다음 정답 pair를 쓴다.
 미래 upper label을 history/router에 넣지 않는다. 알려진 static geometry와 동적 upper fields를 구분하고
 inference 중 dynamic C도 origin snapshot으로 고정한다. B에서는 A가 frozen이어도 decoder 입력 gradient는 유지한다.
+
+## 점검 시 loss와 진단 구분
+
+`weighted_*` 합은 실제 단계별 total loss다. B/C에서 계산되는 surface fair CRPS와
+transition CRPS는 선택/진단에도 사용되며, A curriculum 계수가 B/C에 자동 적용되는 것은 아니다.
+C의 기존 marginal Energy/CRPS·PI·anchor를 유지한다. A의 stochastic sampler는 B/C에서 동결·미사용이다.
+마지막 validation/test RMS 집계는 case MSE/variance를 평균한 뒤 sqrt하며,
+기존 case RMS 평균은 `mean_case_*`로 별도 보존한다. 이는 예측 개선이나 구조 변경이 아니다.

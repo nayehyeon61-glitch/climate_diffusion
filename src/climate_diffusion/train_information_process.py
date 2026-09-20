@@ -110,7 +110,8 @@ def batch_loss(model,batch,args,epoch,streams):
         ramp=min(1.,epoch/(5 if model.phase=='B' else 3))
         weights={'loss_delta':.02,'loss_trajectory':.1,'loss_delta_member':args.b_member_weight if model.phase=='B' else 0.,
                  'loss_wind_speed':.01,'loss_wind_direction':.005}
-        total=teacher['loss']
+        metrics['weighted_specialization']=teacher['loss']
+        total=metrics['weighted_specialization']
         for k,w in weights.items():metrics['weighted_'+k]=metrics[k]*w*ramp;total=total+metrics['weighted_'+k]
         if model.phase=='C':
             metrics.update(model.geometry_losses(batch,info))
@@ -119,6 +120,10 @@ def batch_loss(model,batch,args,epoch,streams):
             metrics.update(marginal)
             metrics['anchor']=(model.encode(batch['origin'],info)-model.encode(batch['origin'],info,True).detach()).square().mean()
             pi=metrics['reconstruction']+.1*metrics['physics']+.05*metrics['invariant']+.1*metrics['metric']+.1*metrics['latent_dynamics']
+            metrics.update(pi=pi,weighted_marginal_energy=.5*marginal['energy'],
+                weighted_marginal_crps=.5*marginal['crps'],weighted_pi=.5*pi,
+                weighted_anchor=metrics['anchor'])
+            # Keep the existing C expression/order: this is logging, not Loss V2.
             total=total+.5*(marginal['energy']+marginal['crps'])+.5*pi+metrics['anchor']
     metrics['loss']=total
     metrics['selection']=metrics['state_crps']+metrics['transition_crps']+.1*metrics['loss_trajectory']+.1*metrics['mean_state']
@@ -134,6 +139,8 @@ def train(args):
     if args.batch_size<2 or args.members<2 or args.epochs<1:raise ValueError('Require batch>=2, members>=2, epochs>=1')
     if min(args.tau_steps,args.window_stride,args.curriculum_interval)<1 or min(args.max_windows,args.patience)<0:
         raise ValueError('Invalid sampling/curriculum counts')
+    if args.max_windows==1:
+        raise ValueError('max_windows must be 0 (all) or >=2 for the manifold metric')
     if not math.isfinite(args.learning_rate) or args.learning_rate<=0 or not math.isfinite(args.weight_decay) or args.weight_decay<0:
         raise ValueError('Invalid optimizer parameters')
     if not math.isfinite(args.b_member_weight) or args.b_member_weight<0:raise ValueError('Invalid member weight')
@@ -179,7 +186,8 @@ def train(args):
     def loader(name,shuffle):
         starts=d['split'][name][::args.window_stride]
         if args.max_windows:starts=starts[:args.max_windows]
-        if len(starts)<2:starts=d['split'][name][:2]
+        if len(starts)<2:
+            raise ValueError(f'{name}: fewer than two selected windows; reduce window_stride or increase max_windows')
         ds=Windows(d['states'],d['times'],config,starts,d['mean'],d['scale'],d['schema'],information=d['information'])
         batches=NonSingletonBatchSampler(len(ds),args.batch_size,shuffle=shuffle,generator=torch.Generator().manual_seed(args.seed))
         return DataLoader(ds,batch_sampler=batches)

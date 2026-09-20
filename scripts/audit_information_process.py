@@ -5,12 +5,15 @@ import numpy as np
 import torch
 from climate_diffusion.train_information_process import load_checkpoint,data_contract,Windows,write_json
 
-def audit(checkpoint,archive,output,information=None,max_pairs=16):
+def audit(checkpoint,archive,output,information=None,max_pairs=16,split='expert_validation'):
     output=Path(output)
     if output.exists():raise FileExistsError(output)
+    if max_pairs<1:raise ValueError('max_pairs must be positive')
+    if split not in ('expert_validation','validation'):
+        raise ValueError('A audit must use expert_validation or validation, never test for tuning')
     model,p=load_checkpoint(checkpoint);model.eval()
     d=data_contract(archive,information,p['mode'],model.config,p)
-    ds=Windows(d['states'],d['times'],model.config,d['split']['validation'],d['mean'],d['scale'],d['schema'],information=d['information'])
+    ds=Windows(d['states'],d['times'],model.config,d['split'][split],d['mean'],d['scale'],d['schema'],information=d['information'])
     pairs={};values={name:[] for name in ('truth','ae','drift','tangent_oracle')}
     for sample in ds:
         full=torch.cat((sample['origin'][None],sample['targets']),0)
@@ -46,7 +49,7 @@ def audit(checkpoint,archive,output,information=None,max_pairs=16):
             pred=fields[kind][:,i];row[kind+'_rmse_per_hour']=rms(pred-true)
             row[kind+'_amplitude_ratio']=rms(pred)/scale if scale>1e-8 else None
         result[name]=row
-    report={'checkpoint':str(checkpoint),'split':'validation','unique_pairs':len(pairs),
+    report={'checkpoint':str(checkpoint),'split':split,'unique_pairs':len(pairs),
             'per_variable':result,'interpretation':'AE uses both observed endpoints; oracle geometry test, NOT forecast. '
             'Tangent is instantaneous least-squares direction oracle in per-variable/area metric; not a learned 6h drift. '
             'Origin information remains fixed within each window, including future surface encoder labels.'}
@@ -56,4 +59,5 @@ if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__)
     for k in ('checkpoint','archive','output'):p.add_argument('--'+k,required=True)
     p.add_argument('--information');p.add_argument('--max-pairs',type=int,default=16)
+    p.add_argument('--split',choices=['expert_validation','validation'],default='expert_validation')
     print(audit(**vars(p.parse_args())))

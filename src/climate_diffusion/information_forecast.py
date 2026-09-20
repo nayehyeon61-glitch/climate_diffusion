@@ -7,11 +7,30 @@ import torch
 from .train_information_process import load_checkpoint,data_contract,Windows,write_json
 from .physical_information import digest
 
+def aggregate_scores(rows):
+    """Equal-size origin windows: pool squared errors BEFORE the square root.
+
+    Old reports averaged per-case RMSE/spread, which is not pooled RMS.
+    Retain the old values under explicit mean_case_* names for comparisons.
+    Linear scores (CRPS/Energy/coverage) continue to use the case mean.
+    """
+    if not rows:
+        raise ValueError('No held-out windows to evaluate')
+    keys=[k for k,v in rows[0].items() if isinstance(v,(float,int))]
+    result={k:float(np.mean([r[k] for r in rows])) for k in keys}
+    for name,squared in (('rmse','mean_state'),('spread','ensemble_variance'),
+                         ('persistence_rmse','persistence_mse')):
+        result['mean_case_'+name]=result[name]
+        result[name]=float(np.sqrt(np.mean([r[squared] for r in rows])))
+    return result
+
 def evaluate(checkpoint,archive,output,*,information=None,split='validation',members=4,tau_steps=4,
              max_cases=4,seed=83,device='cpu',forecast_output=None,drift_only=False):
     output=Path(output)
     if max_cases<0:raise ValueError('max_cases cannot be negative')
     if forecast_output and Path(forecast_output).suffix!='.npz':raise ValueError('Forecast output must end in .npz')
+    if forecast_output and output.resolve()==Path(forecast_output).resolve():
+        raise ValueError('Report and forecast must have distinct output paths')
     if output.exists() or (forecast_output and Path(forecast_output).exists()):raise FileExistsError('Choose new report/forecast paths')
     if split not in ('validation','expert_validation','test'):raise ValueError('Evaluation must use a held-out split')
     model,p=load_checkpoint(checkpoint,device);model.eval()
@@ -30,7 +49,9 @@ def evaluate(checkpoint,archive,output,*,information=None,split='validation',mem
             scores=model.scores(samples,truth,batch['dt_hours'],batch['pair_observed_mask'])
             row={k:float(v) for k,v in scores.items()}
             persistence=batch['origin'][:,None,None].expand_as(samples)
-            row['persistence_rmse']=float(model.scores(persistence,truth,batch['dt_hours'],batch['pair_observed_mask'])['rmse'])
+            persistence_scores=model.scores(persistence,truth,batch['dt_hours'],batch['pair_observed_mask'])
+            row['persistence_rmse']=float(persistence_scores['rmse'])
+            row['persistence_mse']=float(persistence_scores['mean_state'])
             row['origin_time']=str(np.datetime64(int(batch['origin_time_ns'][0].cpu()),'ns'))+'Z'
             row['physical_lead_hours']=(np.arange(1,21)*6).tolist()
             row['generated_routing_by_lead']=[t['routing'] for t in trace if 'routing' in t]
@@ -51,11 +72,11 @@ def evaluate(checkpoint,archive,output,*,information=None,split='validation',mem
                     lead_hours=leads,valid_times=origin+leads.astype('timedelta64[h]'),forecast_step_hours=6,
                     schema_json=json.dumps(p['schema']),temporal_statistics_json=json.dumps(p['statistics']),
                     sampling_contract=p['sampling_contract'],checkpoint_sha256=digest(checkpoint))
-    common=[k for k,v in rows[0].items() if isinstance(v,(float,int))]
     report={'format':'climate_diffusion.information_evaluation.v1','checkpoint_sha256':digest(checkpoint),
         'stage':p['stage'],'split':split,'case_count':len(rows),'members':members,'tau_steps':tau_steps,'seed':seed,
         'drift_only':drift_only,'archive_sha256':p['archive_sha256'],
-        'aggregate':{k:float(np.mean([r[k] for r in rows])) for k in common},'cases':rows,
+        'aggregate':aggregate_scores(rows),'cases':rows,
+        'aggregation':'equal-weight origin windows; RMS from mean squared quantities; mean_case_* preserves old arithmetic RMS averages; overlapping origins are not independent',
         'note':'same member endpoints; scores use physical tendency scaling; no claim of Markov state or calibrated skill'}
     output.parent.mkdir(parents=True,exist_ok=True);write_json(output,report);return report
 
