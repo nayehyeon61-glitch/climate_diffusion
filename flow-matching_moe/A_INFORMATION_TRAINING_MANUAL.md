@@ -9,6 +9,11 @@
 아래 경로는 본인의 실제 파일로 바꾼다. 추가 변수 NetCDF는 **surface archive와 동일한 시각·격자**여야 한다.
 이 스크립트는 ERA5를 다운로드하거나 RunPod/GPU를 생성하지 않는다.
 
+`era5-extra-aligned.nc`가 없다면 먼저 [추가 ERA5 다운로드·정렬 안내](ERA5_EXTRA_DATA_PREPARATION.md)를
+따른다. 도구는 Git의 `scripts/prepare_era5_extra.py`에 있으며 기본은 무다운로드 계획 출력이다.
+CDS 계정/약관 설정 후 `--probe-days 2 --download`로 소량을 확인한다. probe 파일은
+전체 학습용 입력이 아니며, 63년0.25도 자료의 원본 전송량은 최종16×32 파일보다 훨씬 크다.
+
 ```bash
 bash <<'BASH'
 set -euo pipefail
