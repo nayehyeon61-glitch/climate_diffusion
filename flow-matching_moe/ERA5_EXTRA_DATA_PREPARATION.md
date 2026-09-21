@@ -3,6 +3,12 @@
 `INFO_FIELDS` 파일이 없는 경우 학습 전에 수행하는 단계다. ZIP/sandbox 링크 없이
 이 브랜치의 `scripts/prepare_era5_extra.py`를 직접 실행한다. 모델/loss/weights는 변경하지 않는다.
 
+## 원본 디스크 사용량을 제한하려면
+
+[새 streaming 실행 안내](STREAMING_ERA5_TRAINING.md)의 `scripts/stream_era5_extra.py`를 사용한다.
+작은 변환 파일을 검증·보존한 뒤 해당 원본만 삭제하고 중단 시 이어받는다. A/B 준비가 완료되면
+나머지 기간 다운로드와 학습을 병행한다. 아래 `prepare_era5_extra.py` 경로는 raw를 보존하는 기존 방식이다.
+
 ## 지금 바로 실행할 명령
 
 해당 feature 브랜치의 기존 저장소와 가상환경에서 실행한다. 사용자 변경 때문에

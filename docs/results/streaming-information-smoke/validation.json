@@ -1,0 +1,829 @@
+{
+  "format": "climate_diffusion.information_evaluation.v1",
+  "checkpoint_sha256": "b1626e9d54e4fe4e157bad8dba8e73205e417bf81064bf206aa932dbc76af8d5",
+  "stage": "C",
+  "split": "validation",
+  "case_count": 2,
+  "members": 2,
+  "tau_steps": 1,
+  "seed": 83,
+  "drift_only": false,
+  "archive_sha256": "188a39870d52f84d562ad3bbbd1689480373cbf54b272c0a27c3bf569afa0f85",
+  "aggregate": {
+    "loss_trajectory": 1.826693832874298,
+    "loss_delta": 1.1401009559631348,
+    "loss_delta_member": 1.1410894393920898,
+    "delta_member_variance_penalty": 0.0009884604660328478,
+    "increment_spread": 0.020282122073695064,
+    "trajectory_edges": 20.0,
+    "state_mse_msl": 2.425123929977417,
+    "state_mse_t2m": 2.1974093914031982,
+    "state_mse_u10": 2.236741304397583,
+    "state_mse_v10": 2.8476165533065796,
+    "tendency_mse_msl": 1.0967862010002136,
+    "tendency_mse_t2m": 1.0951347351074219,
+    "tendency_mse_u10": 1.2272206544876099,
+    "tendency_mse_v10": 1.1412622332572937,
+    "loss_wind_speed": 0.4776654690504074,
+    "loss_wind_direction": 1.9910241961479187,
+    "wind_direction_valid_fraction": 0.9955357313156128,
+    "state_crps": 1.2277140021324158,
+    "transition_crps": 0.8357285559177399,
+    "mean_state": 2.5480589866638184,
+    "ensemble_variance": 0.004972166527295485,
+    "rmse": 1.5962640717199077,
+    "spread": 0.07051359108211327,
+    "coverage80": 0.011604338302277029,
+    "state_crps_msl": 1.2262828350067139,
+    "transition_crps_msl": 0.8213431537151337,
+    "state_crps_t2m": 1.2082276344299316,
+    "transition_crps_t2m": 0.8232052326202393,
+    "state_crps_u10": 1.2177382111549377,
+    "transition_crps_u10": 0.8744450807571411,
+    "state_crps_v10": 1.2586074471473694,
+    "transition_crps_v10": 0.823920875787735,
+    "persistence_rmse": 1.6118382981416217,
+    "persistence_mse": 2.598022699356079,
+    "chart_distance_radius_mean": 5.75698447227478,
+    "info_crps_z850": 1.1528348922729492,
+    "info_transition_z850": 0.8215086460113525,
+    "info_crps_z500": 1.0969343185424805,
+    "info_transition_z500": 0.8179457485675812,
+    "info_crps_z250": 1.1160772442817688,
+    "info_transition_z250": 0.8083361685276031,
+    "info_crps_u850": 1.1987767219543457,
+    "info_transition_u850": 0.8867307901382446,
+    "info_crps_v850": 1.1146511435508728,
+    "info_transition_v850": 0.8286449909210205,
+    "info_distribution": 0.9842440187931061,
+    "mean_case_rmse": 1.5962579250335693,
+    "mean_case_spread": 0.05904607567936182,
+    "mean_case_persistence_rmse": 1.6118098497390747
+  },
+  "cases": [
+    {
+      "loss_trajectory": 1.8711429834365845,
+      "loss_delta": 1.1439284086227417,
+      "loss_delta_member": 1.144019603729248,
+      "delta_member_variance_penalty": 9.127269731834531e-05,
+      "increment_spread": 0.00720987981185317,
+      "trajectory_edges": 20.0,
+      "state_mse_msl": 2.459421157836914,
+      "state_mse_t2m": 2.138840436935425,
+      "state_mse_u10": 2.2582943439483643,
+      "state_mse_v10": 2.904315710067749,
+      "tendency_mse_msl": 1.1063305139541626,
+      "tendency_mse_t2m": 1.0887138843536377,
+      "tendency_mse_u10": 1.2383081912994385,
+      "tendency_mse_v10": 1.142360806465149,
+      "loss_wind_speed": 0.48461097478866577,
+      "loss_wind_direction": 2.0723037719726562,
+      "wind_direction_valid_fraction": 0.9955357313156128,
+      "state_crps": 1.2517048120498657,
+      "transition_crps": 0.8501322865486145,
+      "mean_state": 2.5622286796569824,
+      "ensemble_variance": 0.00042028847383335233,
+      "rmse": 1.600696325302124,
+      "spread": 0.02050093747675419,
+      "coverage80": 0.003259041113778949,
+      "state_crps_msl": 1.256015419960022,
+      "transition_crps_msl": 0.8415862321853638,
+      "state_crps_t2m": 1.216710090637207,
+      "transition_crps_t2m": 0.8319226503372192,
+      "state_crps_u10": 1.2536673545837402,
+      "transition_crps_u10": 0.8909703493118286,
+      "state_crps_v10": 1.2804259061813354,
+      "transition_crps_v10": 0.8360501527786255,
+      "persistence_rmse": 1.6213921308517456,
+      "persistence_mse": 2.6289124488830566,
+      "origin_time": "2001-02-25T18:00:00.000000000Z",
+      "physical_lead_hours": [
+        6,
+        12,
+        18,
+        24,
+        30,
+        36,
+        42,
+        48,
+        54,
+        60,
+        66,
+        72,
+        78,
+        84,
+        90,
+        96,
+        102,
+        108,
+        114,
+        120
+      ],
+      "generated_routing_by_lead": [
+        {
+          "gate_mean": [
+            1.854687212698991e-07,
+            0.9999997615814209
+          ],
+          "entropy_nats": 3.1132542517298134e-06,
+          "candidate_cosine": -0.018946906551718712,
+          "raw_transport_norm": 4.012805461883545,
+          "projected_transport_norm": 0.8448682427406311,
+          "projection_ratio": 0.21223020553588867,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            4.805954034736715e-08,
+            0.9999999403953552
+          ],
+          "entropy_nats": 8.605854873167118e-07,
+          "candidate_cosine": -0.5067527294158936,
+          "raw_transport_norm": 4.10428524017334,
+          "projected_transport_norm": 0.7764669060707092,
+          "projection_ratio": 0.18942514061927795,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            2.8311681887771556e-09,
+            1.0
+          ],
+          "entropy_nats": 5.447786932677445e-08,
+          "candidate_cosine": 0.4631597399711609,
+          "raw_transport_norm": 4.082150459289551,
+          "projected_transport_norm": 0.6071043014526367,
+          "projection_ratio": 0.15735849738121033,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            2.841237523032447e-10,
+            1.0
+          ],
+          "entropy_nats": 6.0837490600818e-09,
+          "candidate_cosine": 0.2956167161464691,
+          "raw_transport_norm": 3.9704205989837646,
+          "projected_transport_norm": 0.569631814956665,
+          "projection_ratio": 0.14488562941551208,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            1.4209437793066826e-10,
+            1.0
+          ],
+          "entropy_nats": 3.131363390806996e-09,
+          "candidate_cosine": -0.2386450618505478,
+          "raw_transport_norm": 4.146441459655762,
+          "projected_transport_norm": 0.5750775337219238,
+          "projection_ratio": 0.14198774099349976,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            3.9964424131122556e-11,
+            1.0
+          ],
+          "entropy_nats": 9.302831838198244e-10,
+          "candidate_cosine": 0.8284633159637451,
+          "raw_transport_norm": 4.203289985656738,
+          "projected_transport_norm": 0.6452656388282776,
+          "projection_ratio": 0.15508145093917847,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            2.257017142626161e-11,
+            1.0
+          ],
+          "entropy_nats": 5.378657519372609e-10,
+          "candidate_cosine": -0.1271962672472,
+          "raw_transport_norm": 4.196821212768555,
+          "projected_transport_norm": 0.7166687846183777,
+          "projection_ratio": 0.17034852504730225,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            2.240372167297555e-12,
+            1.0
+          ],
+          "entropy_nats": 5.855078227812172e-11,
+          "candidate_cosine": 0.6673735976219177,
+          "raw_transport_norm": 4.286762237548828,
+          "projected_transport_norm": 0.7176991105079651,
+          "projection_ratio": 0.1687186360359192,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            1.514692370011353e-13,
+            1.0
+          ],
+          "entropy_nats": 4.185249802973745e-12,
+          "candidate_cosine": -0.22568099200725555,
+          "raw_transport_norm": 4.2491350173950195,
+          "projected_transport_norm": 0.9048696756362915,
+          "projection_ratio": 0.21348918974399567,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            7.832157062389721e-15,
+            1.0
+          ],
+          "entropy_nats": 2.1641049412560176e-13,
+          "candidate_cosine": -0.005445884540677071,
+          "raw_transport_norm": 4.235726833343506,
+          "projected_transport_norm": 0.6568475365638733,
+          "projection_ratio": 0.1598164439201355,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            4.4196866286661148e-16,
+            1.0
+          ],
+          "entropy_nats": 1.2212045848029093e-14,
+          "candidate_cosine": 0.26590102910995483,
+          "raw_transport_norm": 4.045154571533203,
+          "projected_transport_norm": 0.6746243834495544,
+          "projection_ratio": 0.16712476313114166,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            8.191017049463448e-17,
+            1.0
+          ],
+          "entropy_nats": 2.2632616589098866e-15,
+          "candidate_cosine": 0.377285897731781,
+          "raw_transport_norm": 4.404590606689453,
+          "projected_transport_norm": 0.6481462717056274,
+          "projection_ratio": 0.14326199889183044,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            1.1260992013835603e-17,
+            1.0
+          ],
+          "entropy_nats": 3.111527092042001e-16,
+          "candidate_cosine": 0.7480154037475586,
+          "raw_transport_norm": 4.335888862609863,
+          "projected_transport_norm": 0.5753834247589111,
+          "projection_ratio": 0.1328706592321396,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            3.1301033434840944e-18,
+            1.0
+          ],
+          "entropy_nats": 8.648795344062544e-17,
+          "candidate_cosine": 0.42111581563949585,
+          "raw_transport_norm": 4.2985920906066895,
+          "projected_transport_norm": 0.5876988768577576,
+          "projection_ratio": 0.1359046995639801,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            6.546122803070485e-19,
+            1.0
+          ],
+          "entropy_nats": 1.808760607575611e-17,
+          "candidate_cosine": 0.8218658566474915,
+          "raw_transport_norm": 4.347286224365234,
+          "projected_transport_norm": 0.542999267578125,
+          "projection_ratio": 0.12455503642559052,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            3.1882112822510844e-20,
+            1.0
+          ],
+          "entropy_nats": 8.809353582500925e-19,
+          "candidate_cosine": 0.28692981600761414,
+          "raw_transport_norm": 3.9073708057403564,
+          "projected_transport_norm": 0.6738359928131104,
+          "projection_ratio": 0.17232541739940643,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            4.387193101157932e-21,
+            1.0
+          ],
+          "entropy_nats": 1.2122263376070144e-19,
+          "candidate_cosine": 0.7873319387435913,
+          "raw_transport_norm": 3.99310040473938,
+          "projected_transport_norm": 0.5817440748214722,
+          "projection_ratio": 0.14625054597854614,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            4.331495633742788e-22,
+            1.0
+          ],
+          "entropy_nats": 1.1968365615311086e-20,
+          "candidate_cosine": 0.5181277990341187,
+          "raw_transport_norm": 3.593951463699341,
+          "projected_transport_norm": 0.6948118209838867,
+          "projection_ratio": 0.19351881742477417,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            9.228772027476438e-23,
+            1.0
+          ],
+          "entropy_nats": 2.5500039580449172e-21,
+          "candidate_cosine": 0.02168537676334381,
+          "raw_transport_norm": 3.7355332374572754,
+          "projected_transport_norm": 0.7510635256767273,
+          "projection_ratio": 0.2004467248916626,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            2.2103622240194028e-23,
+            1.0
+          ],
+          "entropy_nats": 6.107456548836169e-22,
+          "candidate_cosine": 0.4793027639389038,
+          "raw_transport_norm": 3.868685483932495,
+          "projected_transport_norm": 0.578593373298645,
+          "projection_ratio": 0.15007904171943665,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        }
+      ],
+      "q_per_day_rms_by_lead": {
+        "drift_per_day": [
+          0.47728657722473145,
+          0.3273765742778778,
+          0.21579448878765106,
+          0.2266707420349121,
+          0.20607241988182068,
+          0.16994693875312805,
+          0.1938784420490265,
+          0.18063725531101227,
+          0.2023041546344757,
+          0.19780749082565308,
+          0.19517908990383148,
+          0.1976383924484253,
+          0.1951315701007843,
+          0.20171679556369781,
+          0.20421245694160461,
+          0.20752708613872528,
+          0.20998026430606842,
+          0.21090762317180634,
+          0.21204394102096558,
+          0.2107585221529007
+        ],
+        "residual_per_day": [
+          2.6594245433807373,
+          3.068772792816162,
+          3.378580331802368,
+          0.9040170311927795,
+          1.0822910070419312,
+          2.2539174556732178,
+          1.066440224647522,
+          2.773406982421875,
+          1.286610722541809,
+          1.1363927125930786,
+          1.1960585117340088,
+          1.1543015241622925,
+          1.6160460710525513,
+          1.1549782752990723,
+          1.9803284406661987,
+          1.3822996616363525,
+          1.3087208271026611,
+          1.2320916652679443,
+          0.9939195513725281,
+          1.0107847452163696
+        ],
+        "final_per_day": [
+          2.7442941665649414,
+          3.1311471462249756,
+          3.4384870529174805,
+          0.8939881920814514,
+          1.104926586151123,
+          2.250260829925537,
+          1.0967121124267578,
+          2.712709426879883,
+          1.2676416635513306,
+          1.1220413446426392,
+          1.168182611465454,
+          1.2610701322555542,
+          1.514184594154358,
+          1.1193177700042725,
+          1.8386317491531372,
+          1.2874839305877686,
+          1.2207529544830322,
+          1.1872389316558838,
+          1.0690858364105225,
+          0.901020884513855
+        ]
+      },
+      "chart_distance_radius_mean": 6.327160835266113,
+      "info_crps_z850": 1.1785013675689697,
+      "info_transition_z850": 0.8454758524894714,
+      "info_crps_z500": 1.1263211965560913,
+      "info_transition_z500": 0.8590108156204224,
+      "info_crps_z250": 1.1630998849868774,
+      "info_transition_z250": 0.8436673283576965,
+      "info_crps_u850": 1.2393534183502197,
+      "info_transition_u850": 0.9233864545822144,
+      "info_crps_v850": 1.1592334508895874,
+      "info_transition_v850": 0.8517853021621704,
+      "info_distribution": 1.0189834833145142
+    },
+    {
+      "loss_trajectory": 1.7822446823120117,
+      "loss_delta": 1.1362735033035278,
+      "loss_delta_member": 1.1381592750549316,
+      "delta_member_variance_penalty": 0.0018856482347473502,
+      "increment_spread": 0.03335436433553696,
+      "trajectory_edges": 20.0,
+      "state_mse_msl": 2.39082670211792,
+      "state_mse_t2m": 2.2559783458709717,
+      "state_mse_u10": 2.2151882648468018,
+      "state_mse_v10": 2.79091739654541,
+      "tendency_mse_msl": 1.0872418880462646,
+      "tendency_mse_t2m": 1.101555585861206,
+      "tendency_mse_u10": 1.2161331176757812,
+      "tendency_mse_v10": 1.1401636600494385,
+      "loss_wind_speed": 0.47071996331214905,
+      "loss_wind_direction": 1.9097446203231812,
+      "wind_direction_valid_fraction": 0.9955357313156128,
+      "state_crps": 1.2037231922149658,
+      "transition_crps": 0.8213248252868652,
+      "mean_state": 2.5338892936706543,
+      "ensemble_variance": 0.009524044580757618,
+      "rmse": 1.5918195247650146,
+      "spread": 0.09759121388196945,
+      "coverage80": 0.01994963549077511,
+      "state_crps_msl": 1.1965502500534058,
+      "transition_crps_msl": 0.8011000752449036,
+      "state_crps_t2m": 1.1997451782226562,
+      "transition_crps_t2m": 0.8144878149032593,
+      "state_crps_u10": 1.1818090677261353,
+      "transition_crps_u10": 0.8579198122024536,
+      "state_crps_v10": 1.2367889881134033,
+      "transition_crps_v10": 0.8117915987968445,
+      "persistence_rmse": 1.6022275686264038,
+      "persistence_mse": 2.5671329498291016,
+      "origin_time": "2001-02-26T00:00:00.000000000Z",
+      "physical_lead_hours": [
+        6,
+        12,
+        18,
+        24,
+        30,
+        36,
+        42,
+        48,
+        54,
+        60,
+        66,
+        72,
+        78,
+        84,
+        90,
+        96,
+        102,
+        108,
+        114,
+        120
+      ],
+      "generated_routing_by_lead": [
+        {
+          "gate_mean": [
+            3.495345168857966e-08,
+            1.0
+          ],
+          "entropy_nats": 6.001245083098183e-07,
+          "candidate_cosine": -0.3816104531288147,
+          "raw_transport_norm": 3.9774844646453857,
+          "projected_transport_norm": 0.830525815486908,
+          "projection_ratio": 0.21014544367790222,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            3.906749057591696e-08,
+            0.9999999403953552
+          ],
+          "entropy_nats": 7.045193797239335e-07,
+          "candidate_cosine": -0.6944594979286194,
+          "raw_transport_norm": 3.938948631286621,
+          "projected_transport_norm": 0.6310674548149109,
+          "projection_ratio": 0.1600705087184906,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            2.6757726701021056e-08,
+            1.0
+          ],
+          "entropy_nats": 4.4870125748275314e-07,
+          "candidate_cosine": -0.2688223421573639,
+          "raw_transport_norm": 4.018761157989502,
+          "projected_transport_norm": 0.6041081547737122,
+          "projection_ratio": 0.15853148698806763,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            2.4413729704519938e-08,
+            1.0
+          ],
+          "entropy_nats": 4.111145415208739e-07,
+          "candidate_cosine": -0.14738497138023376,
+          "raw_transport_norm": 4.074819564819336,
+          "projected_transport_norm": 0.48992642760276794,
+          "projection_ratio": 0.12102916836738586,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            3.1560125535179395e-07,
+            0.9999997019767761
+          ],
+          "entropy_nats": 4.80348580822465e-06,
+          "candidate_cosine": -0.29567626118659973,
+          "raw_transport_norm": 4.104819297790527,
+          "projected_transport_norm": 0.4934818148612976,
+          "projection_ratio": 0.12056392431259155,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            1.7828550653575803e-06,
+            0.9999982118606567
+          ],
+          "entropy_nats": 2.415253948129248e-05,
+          "candidate_cosine": 0.7442785501480103,
+          "raw_transport_norm": 4.181812286376953,
+          "projected_transport_norm": 0.5307603478431702,
+          "projection_ratio": 0.12921461462974548,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            6.1273221945157275e-06,
+            0.9999938607215881
+          ],
+          "entropy_nats": 7.543683750554919e-05,
+          "candidate_cosine": -0.2798347771167755,
+          "raw_transport_norm": 4.25787878036499,
+          "projected_transport_norm": 0.6723178625106812,
+          "projection_ratio": 0.1576436161994934,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            1.0849068530660588e-05,
+            0.9999891519546509
+          ],
+          "entropy_nats": 0.00012734830670524389,
+          "candidate_cosine": 0.3102388083934784,
+          "raw_transport_norm": 4.311694145202637,
+          "projected_transport_norm": 0.7160956859588623,
+          "projection_ratio": 0.171945720911026,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            1.3046343383393832e-06,
+            0.9999986886978149
+          ],
+          "entropy_nats": 1.8084254406858236e-05,
+          "candidate_cosine": -0.21675097942352295,
+          "raw_transport_norm": 4.170612812042236,
+          "projected_transport_norm": 0.8372512459754944,
+          "projection_ratio": 0.20191314816474915,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            9.483255780651234e-07,
+            0.9999990463256836
+          ],
+          "entropy_nats": 1.3448261597659439e-05,
+          "candidate_cosine": -0.02778445929288864,
+          "raw_transport_norm": 4.193875789642334,
+          "projected_transport_norm": 0.6313973069190979,
+          "projection_ratio": 0.15727317333221436,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            2.338560847192639e-07,
+            0.9999997615814209
+          ],
+          "entropy_nats": 3.6469675706030102e-06,
+          "candidate_cosine": 0.21575753390789032,
+          "raw_transport_norm": 3.98410964012146,
+          "projected_transport_norm": 0.6036643385887146,
+          "projection_ratio": 0.15260156989097595,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            5.031281489209505e-07,
+            0.9999995231628418
+          ],
+          "entropy_nats": 7.424670911859721e-06,
+          "candidate_cosine": 0.503770112991333,
+          "raw_transport_norm": 4.14015007019043,
+          "projected_transport_norm": 0.5188892483711243,
+          "projection_ratio": 0.1235276609659195,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            3.474580125839566e-07,
+            0.9999996423721313
+          ],
+          "entropy_nats": 5.284400231175823e-06,
+          "candidate_cosine": 0.8314200639724731,
+          "raw_transport_norm": 4.163822174072266,
+          "projected_transport_norm": 0.44587743282318115,
+          "projection_ratio": 0.10670178383588791,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            5.581328537118679e-07,
+            0.999999463558197
+          ],
+          "entropy_nats": 8.185943443095312e-06,
+          "candidate_cosine": 0.3784244954586029,
+          "raw_transport_norm": 4.047839164733887,
+          "projected_transport_norm": 0.5033234357833862,
+          "projection_ratio": 0.1250024139881134,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            7.033747237983334e-07,
+            0.9999992847442627
+          ],
+          "entropy_nats": 1.0192687113885768e-05,
+          "candidate_cosine": 0.5219060778617859,
+          "raw_transport_norm": 4.324884414672852,
+          "projected_transport_norm": 0.5748065710067749,
+          "projection_ratio": 0.1320008933544159,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            6.482093795057153e-08,
+            0.9999999403953552
+          ],
+          "entropy_nats": 1.0875668294829666e-06,
+          "candidate_cosine": 0.38363808393478394,
+          "raw_transport_norm": 3.7731573581695557,
+          "projected_transport_norm": 0.6601086854934692,
+          "projection_ratio": 0.1742817908525467,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            6.824864584586976e-08,
+            0.9999999403953552
+          ],
+          "entropy_nats": 1.1384083791199373e-06,
+          "candidate_cosine": 0.6351885199546814,
+          "raw_transport_norm": 3.999429225921631,
+          "projected_transport_norm": 0.5812667608261108,
+          "projection_ratio": 0.14490088820457458,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            1.2427864071185013e-08,
+            1.0
+          ],
+          "entropy_nats": 2.176141009613275e-07,
+          "candidate_cosine": 0.7702258825302124,
+          "raw_transport_norm": 3.43375825881958,
+          "projected_transport_norm": 0.6223142147064209,
+          "projection_ratio": 0.18143285810947418,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            1.3952782929038676e-08,
+            1.0
+          ],
+          "entropy_nats": 2.4270084963973204e-07,
+          "candidate_cosine": 0.14340674877166748,
+          "raw_transport_norm": 3.6090407371520996,
+          "projected_transport_norm": 0.5609058141708374,
+          "projection_ratio": 0.15789537131786346,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        },
+        {
+          "gate_mean": [
+            5.626862975560698e-09,
+            1.0
+          ],
+          "entropy_nats": 1.0298603569935949e-07,
+          "candidate_cosine": 0.6020744442939758,
+          "raw_transport_norm": 3.7220778465270996,
+          "projected_transport_norm": 0.5103920698165894,
+          "projection_ratio": 0.13995414972305298,
+          "unit": "weighted normalized-state/day per tau; NOT physical tendency; final tau evaluation only"
+        }
+      ],
+      "q_per_day_rms_by_lead": {
+        "drift_per_day": [
+          0.47449612617492676,
+          0.3542836606502533,
+          0.25985726714134216,
+          0.2060810923576355,
+          0.17460833489894867,
+          0.1506890058517456,
+          0.16033180058002472,
+          0.17077358067035675,
+          0.18662218749523163,
+          0.20231108367443085,
+          0.21358442306518555,
+          0.22742508351802826,
+          0.23872733116149902,
+          0.2447081059217453,
+          0.25168001651763916,
+          0.24424946308135986,
+          0.24910198152065277,
+          0.24669332802295685,
+          0.25133898854255676,
+          0.25326022505760193
+        ],
+        "residual_per_day": [
+          2.2363669872283936,
+          1.8732972145080566,
+          2.1730949878692627,
+          0.9828386902809143,
+          1.2191182374954224,
+          1.9215689897537231,
+          1.2466232776641846,
+          2.5181174278259277,
+          1.1755092144012451,
+          1.308644413948059,
+          0.976418673992157,
+          1.1169722080230713,
+          1.2636317014694214,
+          1.0020711421966553,
+          1.793166160583496,
+          1.274566650390625,
+          1.5022242069244385,
+          1.2496134042739868,
+          0.9943930506706238,
+          0.9827388525009155
+        ],
+        "final_per_day": [
+          2.1962130069732666,
+          1.8403258323669434,
+          2.207747459411621,
+          0.9652569890022278,
+          1.213905930519104,
+          1.9329040050506592,
+          1.2845498323440552,
+          2.4655375480651855,
+          1.2075988054275513,
+          1.298370361328125,
+          0.9889035224914551,
+          1.1531610488891602,
+          1.159393072128296,
+          0.9559131264686584,
+          1.6491488218307495,
+          1.1864674091339111,
+          1.3795908689498901,
+          1.1738518476486206,
+          0.9634923934936523,
+          0.874771773815155
+        ]
+      },
+      "chart_distance_radius_mean": 5.186808109283447,
+      "info_crps_z850": 1.1271684169769287,
+      "info_transition_z850": 0.7975414395332336,
+      "info_crps_z500": 1.0675474405288696,
+      "info_transition_z500": 0.77688068151474,
+      "info_crps_z250": 1.0690546035766602,
+      "info_transition_z250": 0.7730050086975098,
+      "info_crps_u850": 1.1582000255584717,
+      "info_transition_u850": 0.8500751256942749,
+      "info_crps_v850": 1.0700688362121582,
+      "info_transition_v850": 0.8055046796798706,
+      "info_distribution": 0.949504554271698
+    }
+  ],
+  "aggregation": "equal-weight origin windows; RMS from mean squared quantities; mean_case_* preserves old arithmetic RMS averages; overlapping origins are not independent",
+  "note": "same member endpoints; scores use physical tendency scaling; no claim of Markov state or calibrated skill"
+}

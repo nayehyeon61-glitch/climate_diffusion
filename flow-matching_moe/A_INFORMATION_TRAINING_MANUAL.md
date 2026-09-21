@@ -4,6 +4,13 @@
 `joint_ab`/Loss V2 브랜치를 사용하거나 A와 B를 합치지 않았다. 기존 trainer/CLI/weights는 그대로다.
 새 경로는 별도 checkpoint 형식 `climate_diffusion.separate_a_information_process.v1`을 사용한다.
 
+## 대형 원본을 모두 저장하기 어려울 때
+
+[작은 다운로드 + 학습 병행 매뉴얼](STREAMING_ERA5_TRAINING.md)을 사용한다.
+`stream_era5_extra.py`는 검증된 작은 shard를 보존하고 해당 원본만 삭제하며,
+`run_streaming_a_information.sh`는 A/B 준비 prefix 이후 나머지 다운로드와 학습을 병행한다.
+추가 입력 `INFO`에 NPZ 대신 shard 디렉터리를 전달할 수 있다. 아래 기존 NetCDF→NPZ 경로도 유지한다.
+
 ## 0. 복사해서 실행할 순서
 
 아래 경로는 본인의 실제 파일로 바꾼다. 추가 변수 NetCDF는 **surface archive와 동일한 시각·격자**여야 한다.

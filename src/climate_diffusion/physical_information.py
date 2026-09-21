@@ -98,31 +98,46 @@ def prepare(archive,fields,output,optional=()):
                         observed_mask=np.ones((len(times),data[0].size),dtype=np.uint8),metadata_json=json.dumps(info))
     return output
 
+def validate_information(data, meta, actual_times, observed_mask, times, schema):
+    """Validate a complete sidecar or one exact-time shard; no imputation."""
+    if meta['grid']!=schema['variables'][0]['coords'] or not np.array_equal(actual_times,times):
+        raise ValueError('Information grid/times mismatch')
+    if data.shape!=(len(times),int(np.prod(meta['shape']))) or not np.isfinite(data).all():
+        raise ValueError('Information shape/nonfinite error')
+    if observed_mask.shape!=data.shape or not np.all(observed_mask==1):
+        raise ValueError('Missing physical information endpoint')
+    names=[v['name'] for v in meta['variables']]
+    if len(names)!=len(set(names)) or not set(PRIMARY).issubset(names) or set(names)-set(PRIMARY+OPTIONAL):
+        raise ValueError('Invalid physical information variable schema')
+    if meta['shape']!=[len(names),*schema['variables'][0]['shape']]:raise ValueError('Information schema shape mismatch')
+    cells=int(np.prod(meta['shape'][1:]))
+    for i,v in enumerate(meta['variables']):
+        name=v['name']
+        expected=('1',) if name=='terrain_slope' else ('m',) if name.startswith('z') or name=='terrain_height' else ('m/s',) if name.startswith(('u','v')) else ('kg/kg','kg kg**-1','1') if name.startswith('q') else ('K',)
+        if v['unit'] not in expected:raise ValueError('Noncanonical information units')
+        pressure=int(name[1:]) if name[0] in 'zutvq' and name[1:].isdigit() else None
+        if v['pressure_hpa']!=pressure:raise ValueError('Information pressure level mismatch')
+        expected_kind='static' if name.startswith('terrain_') else 'dynamic'
+        if v['kind']!=expected_kind:raise ValueError('Static/dynamic schema mismatch')
+        if v['kind']=='static' and not np.all(data[:,i*cells:(i+1)*cells]==data[:1,i*cells:(i+1)*cells]):
+            raise ValueError('Static terrain changes in time')
+
+def information_digest(path):
+    """A sidecar file hash, or immutable plan + metadata identity for shards."""
+    path=Path(path)
+    if path.is_dir():
+        return hashlib.sha256((digest(path/'plan.json')+digest(path/'metadata.json')).encode()).hexdigest()
+    return digest(path)
+
 def load_information(path,archive,times,schema):
+    if Path(path).is_dir():
+        from .information_shards import InformationShards
+        data=InformationShards(path,archive,times,schema)
+        return data,data.meta
     with np.load(path,allow_pickle=False) as f:
         meta=json.loads(str(f['metadata_json']));data=f['data'].astype(np.float32)
         if meta['format']!=FORMAT or meta['surface_sha256']!=digest(archive): raise ValueError('Information archive hash/format mismatch')
-        if meta['grid']!=schema['variables'][0]['coords'] or not np.array_equal(f['times'],times):
-            raise ValueError('Information grid/times mismatch')
-        if data.shape!=(len(times),int(np.prod(meta['shape']))) or not np.isfinite(data).all():
-            raise ValueError('Information shape/nonfinite error')
-        if f['observed_mask'].shape!=data.shape or not np.all(f['observed_mask']==1):
-            raise ValueError('Missing physical information endpoint')
-        names=[v['name'] for v in meta['variables']]
-        if len(names)!=len(set(names)) or not set(PRIMARY).issubset(names) or set(names)-set(PRIMARY+OPTIONAL):
-            raise ValueError('Invalid physical information variable schema')
-        if meta['shape']!=[len(names),*schema['variables'][0]['shape']]:raise ValueError('Information schema shape mismatch')
-        cells=int(np.prod(meta['shape'][1:]))
-        for i,v in enumerate(meta['variables']):
-            name=v['name']
-            expected=('1',) if name=='terrain_slope' else ('m',) if name.startswith('z') or name=='terrain_height' else ('m/s',) if name.startswith(('u','v')) else ('kg/kg','kg kg**-1','1') if name.startswith('q') else ('K',)
-            if v['unit'] not in expected:raise ValueError('Noncanonical information units')
-            pressure=int(name[1:]) if name[0] in 'zutvq' and name[1:].isdigit() else None
-            if v['pressure_hpa']!=pressure:raise ValueError('Information pressure level mismatch')
-            expected_kind='static' if name.startswith('terrain_') else 'dynamic'
-            if v['kind']!=expected_kind:raise ValueError('Static/dynamic schema mismatch')
-            if v['kind']=='static' and not np.all(data[:,i*cells:(i+1)*cells]==data[:1,i*cells:(i+1)*cells]):
-                raise ValueError('Static terrain changes in time')
+        validate_information(data,meta,f['times'],f['observed_mask'],times,schema)
     return data,meta
 
 def fit_information(data,meta,train_end,schema):

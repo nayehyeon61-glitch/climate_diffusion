@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from .information_process import InformationProcess, FORMAT, curriculum, gradient_diagnostics
-from .physical_information import load_information, fit_information, digest
+from .physical_information import load_information, fit_information, digest, information_digest
 from .manifold_moe import ManifoldMoEConfig
 from .moe_data import load_moe_archive, field_grid, build_moe_split, validate_moe_split
 from .temporal_supervision import TemporalWindowDataset, NonSingletonBatchSampler, fit_temporal_statistics, area_weights
@@ -52,8 +52,9 @@ def data_contract(archive,information_path,mode,config,parent=None):
         info,meta=load_information(information_path,archive,times,schema)
     elif information_path:raise ValueError('Surface mode must not receive enriched information')
     if parent:
-        if parent['archive_sha256']!=digest(archive) or parent['information_sha256']!=(digest(information_path) if information_path else None):
+        if parent['archive_sha256']!=digest(archive) or parent['information_sha256']!=(information_digest(information_path) if information_path else None):
             raise ValueError('Parent archive/information hash changed')
+        if hasattr(info,'pin'):info.pin(parent.get('information_shards'))
         split=parent['split'];mean=np.asarray(parent['mean']);scale=np.asarray(parent['scale'])
         stats=parent['statistics'];im=parent['information_mean'];isc=parent['information_scale'];its=parent['information_tendency_scale']
     else:
@@ -63,7 +64,9 @@ def data_contract(archive,information_path,mode,config,parent=None):
         mean=states[:end].mean(0);scale=states[:end].std(0);scale=np.where(scale>1e-6,scale,1).astype(np.float32)
         stats=fit_temporal_statistics(states,times,schema,scale,end)
         im=isc=its=None
-        if info is not None:
+        if hasattr(info,'statistics'):
+            im,isc,its=info.statistics(end)
+        elif info is not None:
             im,isc=fit_information(info,meta,end,schema)
             sh=meta['shape'];d=np.diff(info[:end],axis=0).reshape(-1,*sh)/6
             w=area_weights(schema)
@@ -73,7 +76,8 @@ def data_contract(archive,information_path,mode,config,parent=None):
             its=np.broadcast_to(channel[:,None,None],sh).copy().reshape(-1).astype(np.float32)
     validate_moe_split(split,config.horizon_steps,len(states)-config.history_span_steps-config.horizon_steps+1)
     end=split['train'][-1]+config.history_span_steps+config.horizon_steps
-    normalized=None if info is None else ((info-np.asarray(im))/np.asarray(isc)).astype(np.float32)
+    normalized=(info.normalized(im,isc) if hasattr(info,'normalized') else
+                None if info is None else ((info-np.asarray(im))/np.asarray(isc)).astype(np.float32))
     data=dict(states=states,times=times,schema=schema,split=split,mean=mean,scale=scale,statistics=stats,
         information_metadata=meta,information_mean=im,information_scale=isc,information_tendency_scale=its,
         information=normalized,train_end=end)
@@ -247,7 +251,8 @@ def train(args):
     options={k:v for k,v in vars(args).items() if not k.startswith('info_')}
     payload={**persisted,'format':FORMAT,'stage':args.stage,'mode':args.mode,'config':asdict(config),'model':model.state_dict(),
         'options':options,'best_epoch':best_epoch,'best_selection':best,'archive_sha256':digest(args.archive),
-        'information_sha256':digest(args.information) if args.information else None,'parent_sha256':digest(args.init) if args.init else None,
+        'information_sha256':information_digest(args.information) if args.information else None,
+        'information_shards':d['information'].provenance() if hasattr(d['information'],'provenance') else None,'parent_sha256':digest(args.init) if args.init else None,
         'source_commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
         'source_file_sha256':{str(f.relative_to(Path(__file__).parent)):digest(f) for f in sorted(Path(__file__).parent.glob('*.py'))},
         'optimizer_groups':[{'name':g['name'],'lr':g['lr']} for g in groups],

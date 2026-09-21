@@ -26,7 +26,7 @@ case "$stage" in
   preflight)
     "$PYTHON" scripts/prepare_temporal_120h.py --archive "$ARCHIVE" --output "$RUN/preflight.json" \
       --history-steps 6 --history-stride "$HISTORY_STRIDE"
-    if [[ "$MODE" == enriched && ! -f "$INFO" ]]; then
+    if [[ "$MODE" == enriched && ! -e "$INFO" ]]; then
       : "${INFO_FIELDS:?Set aligned extra-field NetCDF; no download or imputation is performed}"
       "$PYTHON" -m climate_diffusion.physical_information --archive "$ARCHIVE" --fields "$INFO_FIELDS" --output "$INFO"
     fi

@@ -123,3 +123,5 @@ flowchart TB
 기본 시간 계약은 history 6개, stride 120, archive step 6h입니다. 입력 시점은
 `t0-150d, -120d, -90d, -60d, -30d, t0`이며 필요한 연속 archive 길이는 601개입니다.
 예측 horizon 120은 **120 × 6h = 30일**입니다. `h24`는 24시간이 아니라 24 step = 144시간입니다.
+
+- [17. 추가 ERA5 다운로드·검증·원본 정리와 A/B 학습 병행](17-streaming-information-data.md)
