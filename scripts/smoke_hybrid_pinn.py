@@ -72,6 +72,8 @@ def synthetic_pinn_information(archive, directory):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, help="New directory for disposable smoke artifacts")
+    parser.add_argument("--expanded", action="store_true",
+                        help="Check the actual A64/B512 profile with hidden width 512")
     args = parser.parse_args(argv)
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=False)
@@ -79,15 +81,19 @@ def main(argv=None):
     started = time.perf_counter()
     archive, _ = synthetic_archive(output, count=320)
     information = synthetic_pinn_information(archive, output)
+    dimensions = dict(manifold_dim=64, hidden_dim=512, context_dim=64,
+                      experts=4, expert_latent_dim=512, gate_hidden_dim=160) if args.expanded else dict(
+                          manifold_dim=4, hidden_dim=24, context_dim=8,
+                          experts=2, expert_latent_dim=8, gate_hidden_dim=12)
     common = [
         "--archive", str(archive), "--information", str(information),
         "--mode", "enriched", "--profile", "process", "--batch-size", "2",
         "--members", "2", "--tau-steps", "1", "--history-steps", "6",
-        "--history-stride", "1", "--manifold-dim", "4", "--hidden-dim", "24",
-        "--context-dim", "8", "--experts", "2", "--expert-latent-dim", "8",
-        "--gate-hidden-dim", "12", "--max-windows", "2", "--window-stride", "8",
+        "--history-stride", "1", "--max-windows", "2", "--window-stride", "8",
         "--seed", "7", "--curriculum-interval", "1", "--gradient-audit",
     ]
+    architecture_options = [item for key, value in dimensions.items()
+                            for item in ("--" + key.replace("_", "-"), str(value))]
     parent = None
     checkpoints = {}
     for stage, epochs in (("A", 7), ("B", 1), ("C", 1)):
@@ -95,7 +101,7 @@ def main(argv=None):
         options = common + ["--output", str(checkpoint), "--stage", stage,
                             "--epochs", str(epochs)]
         if stage == "A":
-            options += ["--pinn", "--pinn-levels", "500", "850",
+            options += architecture_options + ["--pinn", "--pinn-levels", "500", "850",
                         "--pinn-warmup-epochs", "1", "--pinn-ramp-epochs", "2",
                         "--pinn-weight", "0.1"]
         else:
@@ -107,6 +113,8 @@ def main(argv=None):
     model_a, state_a = load_checkpoint(checkpoints["A"])
     model_b, state_b = load_checkpoint(checkpoints["B"])
     model_c, state_c = load_checkpoint(checkpoints["C"])
+    if state_a["config"] != state_b["config"] or state_a["config"] != state_c["config"]:
+        raise AssertionError("B/C did not inherit the exact A architecture")
     trainable_b_prefixes = ("core.experts.", "core.gate.correction.", "core.history_encoder.")
     frozen_b_equal = all(
         torch.equal(value, state_b["model"][name])
@@ -139,6 +147,10 @@ def main(argv=None):
     )
     summary = {
         "scope": "Synthetic integration smoke only; no ERA5 or forecast-skill claim",
+        "profile": "expanded_a64_b512" if args.expanded else "tiny",
+        "model_config": state_a["config"],
+        "parameter_count": sum(parameter.numel() for parameter in model_a.parameters()),
+        "parent_config_inherited": True,
         "epochs": {"A": 7, "B": 1, "C": 1},
         "pinn_config": state_a["pinn_config"],
         "members": 2,

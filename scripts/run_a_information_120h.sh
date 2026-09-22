@@ -66,6 +66,8 @@ print("Validated physical inputs:",names)
     [[ -z "${QUALITY_MAX:-}" ]] || extra+=(--a-quality-max "$QUALITY_MAX")
     [[ -z "${A_LOSS_WEIGHTS:-}" ]] || extra+=(--loss-weights "$A_LOSS_WEIGHTS")
     "$PYTHON" -m climate_diffusion.train_information_process "${common[@]}" --stage A \
+      --manifold-dim "${MANIFOLD_DIM:-64}" --expert-latent-dim "${EXPERT_LATENT_DIM:-512}" \
+      --hidden-dim "${HIDDEN_DIM:-512}" \
       --profile "${PROFILE:-process}" --epochs "${A_EPOCHS:-60}" --curriculum-interval "${CURRICULUM_INTERVAL:-4}" \
       --output "$RUN/a.pt" "${extra[@]}" "${pinn_train[@]}"
     ;;

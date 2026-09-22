@@ -1,6 +1,17 @@
 # Climate Diffusion: Latent Dynamics + Flow Matching
 
-## 이 브랜치: 분리형 A에 Hybrid PINN 추가
+## 이 브랜치: A64 / B512 확장 모델
+
+`feature/a64-b512-expanded`는 Hybrid PINN 브랜치에서 A의 manifold 좌표를 **16→64**,
+B 전문가 내부 latent를 **64→512**, 공통 중간층 폭을 **128→512**로 확장한다.
+B의 manifold 조건·history 입력·접공간 투영과 앙상블 residual noise도 64차원에 맞춰 연결된다.
+B는 복원된 전체 기상장도 입력으로 받으며, B의 전체 입력 길이가 64라는 뜻은 아니다.
+새 A부터 학습하고 B/C는 저장된 A 차원 설정을 이어받는다.
+**[차원 정의·확장 모델 실행 매뉴얼](flow-matching_moe/EXPANDED_A64_B512_MANUAL.md)**.
+실행 runner는 `scripts/run_a_information_120h.sh`이며 streaming runner도 같은 설정을 사용한다.
+PINN은 기존처럼 `PINN=1`로 활성화한다. 실제 ERA5 예측 성능은 아직 검증하지 않았다.
+
+## 기반: 분리형 A에 Hybrid PINN 추가
 
 `feature/a-hybrid-pinn-physics`는 `feature/a-manifold-information-process`의 A/B/C 분리와
 Z·지형 입력을 유지하면서 **A의 실제 6시간 변화에 구면·기압좌표 물리 제약**을 추가한다.
@@ -31,9 +42,10 @@ U850/V850, 지형 고도·경사를 별도 conditioning으로 추가하고 surfa
 다음 달 state 사이의 확률 흐름 ODE를 학습한다는 점에서 latent generative forecast
 역할을 수행합니다.
 
-## 처음 학습할 때의 실행 순서
+## 기존 Manifold trainer의 실행 순서
 
-**현재 최종 Manifold MoE를 처음 실행한다면 [단계별 학습 README](flow-matching_moe/TRAINING_README.md)를
+현재 A64/B512 확장은 위의 확장 모델 매뉴얼을 따른다. 아래는 별도 legacy trainer 안내다.
+**기존 Manifold MoE를 재현한다면 [단계별 학습 README](flow-matching_moe/TRAINING_README.md)를
 1번부터 따라가세요.** 설치 → 합성 smoke → ERA5 archive 준비·검사 → A 학습(`stage_a.pt`) →
 B 전문화(`stage_b.pt`) → C ensemble 보정(`final.pt`) → validation 시간 비교 영상 →
 최종 test 평가·학습 그림 → 최신 관측의 미래 ensemble 저장 순서입니다.

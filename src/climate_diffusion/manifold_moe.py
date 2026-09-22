@@ -32,10 +32,12 @@ class ManifoldMoEConfig:
     horizon_steps: int = 120
     step_hours: int = 6
     num_experts: int = 4
-    manifold_dim: int = 16
-    expert_latent_dim: int = 64
+    # Expanded profile: A coordinates and residual noise are 64-dimensional;
+    # each B expert has a separate 512-dimensional internal representation.
+    manifold_dim: int = 64
+    expert_latent_dim: int = 512
     gate_hidden_dim: int = 160
-    hidden_dim: int = 128
+    hidden_dim: int = 512
     context_dim: int = 64
     time_embedding_dim: int = 16
     gate_temperature: float = 0.7

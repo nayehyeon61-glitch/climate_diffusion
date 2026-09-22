@@ -209,6 +209,9 @@ def train(args):
             history_steps=args.history_steps,history_stride=args.history_stride,manifold_dim=args.manifold_dim,
             hidden_dim=args.hidden_dim,context_dim=args.context_dim,num_experts=args.experts,
             expert_latent_dim=args.expert_latent_dim,gate_hidden_dim=args.gate_hidden_dim,forecast_dynamics='recurrent_residual')
+    print(f'stage={args.stage} manifold_dim={config.manifold_dim} '
+          f'expert_latent_dim={config.expert_latent_dim} hidden_dim={config.hidden_dim} '
+          f'config_source={"parent_checkpoint" if parent is not None else "A_options"}',flush=True)
     d=data_contract(args.archive,args.information,args.mode,config,parent)
     if parent is None:
         model=InformationProcess(config,d['schema'],d['mean'],d['scale'],d['statistics'],d['information_metadata'],
@@ -311,7 +314,8 @@ def main(argv=None):
     p.add_argument('--mode',choices=['surface','enriched'],default='enriched')
     p.add_argument('--profile',choices=['baseline','dynamics','information','process'],default='process')
     for k,v in dict(epochs=12,batch_size=2,members=4,tau_steps=4,history_steps=6,history_stride=4,
-                    manifold_dim=16,hidden_dim=128,context_dim=64,experts=4,expert_latent_dim=64,
+                    manifold_dim=ManifoldMoEConfig.manifold_dim,hidden_dim=ManifoldMoEConfig.hidden_dim,
+                    context_dim=64,experts=4,expert_latent_dim=ManifoldMoEConfig.expert_latent_dim,
                     gate_hidden_dim=160,window_stride=4,max_windows=0,seed=7,curriculum_interval=2,patience=0).items():
         p.add_argument('--'+k.replace('_','-'),type=int,default=v)
     p.add_argument('--learning-rate',type=float,default=.001);p.add_argument('--weight-decay',type=float,default=.0001)
