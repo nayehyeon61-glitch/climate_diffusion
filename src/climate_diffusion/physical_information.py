@@ -11,7 +11,26 @@ from .temporal_supervision import area_weights
 
 FORMAT = 'climate_diffusion.physical_information.v1'
 PRIMARY = ('z850','z500','z250','u850','v850','terrain_height','terrain_slope')
-OPTIONAL = ('t850','t500','u500','v500','sst','q850')
+OPTIONAL = ('t850','t500','u500','v500','sst','q850',
+            't250','u250','v250','w250','w500','w850','q250','q500','sp')
+PINN_LEVELS = (500, 850)
+
+def pinn_optional(levels=PINN_LEVELS):
+    """Fields needed in addition to PRIMARY for co-located primitive equations."""
+    levels=tuple(levels)
+    if levels not in ((500,850),(250,500,850)):
+        raise ValueError('PINN pressure levels must be 500 850 or 250 500 850, in ascending order')
+    return tuple(name for p in levels for key in ('u','v','t','z','w')
+                 if (name:=f'{key}{p}') not in PRIMARY)+('sp',)
+
+def canonical_unit(name):
+    if name=='terrain_slope': return '1'
+    if name.startswith('z') or name=='terrain_height': return 'm'
+    if name.startswith(('u','v')): return 'm/s'
+    if name.startswith('w'): return 'Pa/s'
+    if name=='sp': return 'Pa'
+    if name.startswith('q'): return 'kg/kg'
+    return 'K'
 
 def digest(path):
     h=hashlib.sha256()
@@ -32,7 +51,7 @@ def terrain_slope(height, lat, lon):
 
 def _field(ds,name):
     if name in ds: return ds[name]
-    if name[0] in 'zutvq' and name[1:].isdigit() and name[0] in ds:
+    if name[0] in 'zutvqw' and name[1:].isdigit() and name[0] in ds:
         a=ds[name[0]]
         level=next((d for d in ('pressure_level','level','isobaricInhPa') if d in a.dims),None)
         if level is None: raise ValueError(f'Missing pressure dimension for {name}')
@@ -43,16 +62,22 @@ def _field(ds,name):
         return a.sel({level:target})
     raise ValueError(f'Missing required physical variable: {name}')
 
-def prepare(archive,fields,output,optional=()):
+def prepare(archive,fields,output,optional=(),pinn=False,pinn_levels=PINN_LEVELS):
     output=Path(output)
     if output.suffix!='.npz':raise ValueError('Information output must end in .npz')
     if output.exists(): raise FileExistsError(output)
     _,times,schema=load_moe_archive(archive)
     if set(optional)-set(OPTIONAL) or len(optional)!=len(set(optional)):
         raise ValueError('Unsupported or duplicate optional variable')
+    if pinn:
+        optional=tuple(dict.fromkeys((*pinn_optional(pinn_levels),*optional)))
+    elif tuple(pinn_levels)!=PINN_LEVELS:
+        raise ValueError('Custom PINN levels require pinn=True / --pinn')
     if schema['forecast_step_hours']!=6:
         raise ValueError('Physical information requires an exact 6h surface archive')
     coords=schema['variables'][0]['coords']; names=list(PRIMARY)+list(optional)
+    if pinn:
+        names=[n for n in names if not n.startswith('terrain_')]+['terrain_height','terrain_slope']
     arrays=[]; metadata=[]
     with xr.open_dataset(fields) as ds:
         for axis in ('lat','lon'):
@@ -74,11 +99,17 @@ def prepare(archive,fields,output,optional=()):
                         raise ValueError('Dynamic information requires exact UTC surface timestamps')
                     values=a.transpose('time','lat','lon').values
                 if name.startswith('z') or name=='terrain_height':
-                    if unit in ('m**2 s**-2','m2 s-2','m^2/s^2'): values=values/9.80665; unit='m'
+                    if unit in ('m**2 s**-2','m2 s-2','m^2/s^2','m**2 s**(-2)'): values=values/9.80665; unit='m'
                     if unit!='m': raise ValueError(f'{name}: declare geopotential or height units')
                 elif name.startswith(('u','v')):
                     if unit not in ('m/s','m s**-1','m s-1'): raise ValueError(f'{name}: expected m/s')
                     unit='m/s'
+                elif name.startswith('w'):
+                    if unit not in ('Pa/s','Pa s**-1','Pa s-1'): raise ValueError(f'{name}: expected pressure velocity Pa/s, not geometric m/s')
+                    unit='Pa/s'
+                elif name=='sp':
+                    if unit!='Pa': raise ValueError('sp: expected surface pressure in Pa, not mean sea-level pressure')
+                    if np.any(values<=0): raise ValueError('sp: surface pressure must be positive')
                 elif name.startswith('t') or name=='sst':
                     if unit!='K': raise ValueError(f'{name}: expected K')
                 elif name.startswith('q') and unit not in ('kg/kg','kg kg**-1','1'):
@@ -87,7 +118,7 @@ def prepare(archive,fields,output,optional=()):
             if not np.isfinite(values).all(): raise ValueError('Missing information cells: no imputation allowed')
             arrays.append(values.astype(np.float32))
             metadata.append({'name':name,'unit':unit,'source_unit':source_unit,'kind':'static' if static else 'dynamic',
-                             'pressure_hpa':int(name[1:]) if name[0] in 'zutvq' and name[1:].isdigit() else None})
+                             'pressure_hpa':int(name[1:]) if name[0] in 'zutvqw' and name[1:].isdigit() else None})
     data=np.stack(arrays,axis=1)
     info={'format':FORMAT,'surface_sha256':digest(archive),'source_sha256':digest(fields),
           'variables':metadata,'grid':coords,'shape':list(data.shape[1:]),
@@ -113,10 +144,11 @@ def validate_information(data, meta, actual_times, observed_mask, times, schema)
     cells=int(np.prod(meta['shape'][1:]))
     for i,v in enumerate(meta['variables']):
         name=v['name']
-        expected=('1',) if name=='terrain_slope' else ('m',) if name.startswith('z') or name=='terrain_height' else ('m/s',) if name.startswith(('u','v')) else ('kg/kg','kg kg**-1','1') if name.startswith('q') else ('K',)
+        expected=('kg/kg','kg kg**-1','1') if name.startswith('q') else (canonical_unit(name),)
         if v['unit'] not in expected:raise ValueError('Noncanonical information units')
-        pressure=int(name[1:]) if name[0] in 'zutvq' and name[1:].isdigit() else None
+        pressure=int(name[1:]) if name[0] in 'zutvqw' and name[1:].isdigit() else None
         if v['pressure_hpa']!=pressure:raise ValueError('Information pressure level mismatch')
+        if name=='sp' and np.any(data[:,i*cells:(i+1)*cells]<=0):raise ValueError('sp: surface pressure must be positive')
         expected_kind='static' if name.startswith('terrain_') else 'dynamic'
         if v['kind']!=expected_kind:raise ValueError('Static/dynamic schema mismatch')
         if v['kind']=='static' and not np.all(data[:,i*cells:(i+1)*cells]==data[:1,i*cells:(i+1)*cells]):
@@ -153,5 +185,7 @@ def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     for k in ('archive','fields','output'): p.add_argument('--'+k,required=True)
     p.add_argument('--optional',nargs='*',default=[],choices=OPTIONAL)
-    a=p.parse_args(argv);print(prepare(a.archive,a.fields,a.output,a.optional))
+    p.add_argument('--pinn',action='store_true',help='Require co-located pressure u/v/t/z/w plus actual surface pressure sp')
+    p.add_argument('--pinn-levels',nargs='+',type=int,default=list(PINN_LEVELS),choices=[250,500,850])
+    a=p.parse_args(argv);print(prepare(a.archive,a.fields,a.output,a.optional,a.pinn,a.pinn_levels))
 if __name__=='__main__':main()

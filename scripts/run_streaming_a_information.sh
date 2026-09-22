@@ -9,6 +9,15 @@ PYTHON="${PYTHON:-python}"
 export PYTHON INFO ARCHIVE RUN
 export MODE=enriched
 export PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}"
+PINN="${PINN:-0}"
+PINN_LEVELS="${PINN_LEVELS:-500 850}"
+case "$PINN" in 0|1) ;; *) echo 'PINN must be 0 or 1' >&2; exit 2;; esac
+export PINN PINN_LEVELS
+pinn_data=()
+if [[ "$PINN" == 1 ]]; then
+  read -r -a pinn_levels <<< "$PINN_LEVELS"
+  pinn_data=(--pinn --pinn-levels "${pinn_levels[@]}")
+fi
 START_STAGE="${START_STAGE:-A}"
 THROUGH="${THROUGH:-render}"
 case "$START_STAGE" in A|B|C|validation|render) ;; *) echo 'Invalid START_STAGE' >&2; exit 2;; esac
@@ -42,7 +51,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 "$PYTHON" scripts/stream_era5_extra.py --archive "$ARCHIVE" --store "$INFO" \
   --regrid "${REGRID:-linear}" --days-per-request "${CHUNK_DAYS:-3}" \
-  --download --delete-raw >> "$RUN/download.log" 2>&1 &
+  --download --delete-raw "${pinn_data[@]}" >> "$RUN/download.log" 2>&1 &
 producer=$!
 
 wait_ready() {
@@ -50,6 +59,7 @@ wait_ready() {
   while true; do
     if "$PYTHON" scripts/stream_era5_extra.py --archive "$ARCHIVE" --store "$INFO" \
         --check-ready "$which" --history-stride "${HISTORY_STRIDE:-4}" \
+        "${pinn_data[@]}" \
         > "$RUN/readiness-$which.json" 2> "$RUN/readiness-wait.log"; then
       break
     else
@@ -93,7 +103,7 @@ if [[ -n "$producer" ]]; then
   wait "$producer"
   producer=''
 fi
-"$PYTHON" scripts/stream_era5_extra.py --archive "$ARCHIVE" --store "$INFO" --prune-verified-raw \
+"$PYTHON" scripts/stream_era5_extra.py --archive "$ARCHIVE" --store "$INFO" --prune-verified-raw "${pinn_data[@]}" \
   > "$RUN/raw-cleanup.json"
 echo "Completed through $THROUGH. Inspect validation before final test."
 echo 'Fixed settings only: bash scripts/run_a_information_120h.sh test'

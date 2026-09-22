@@ -4,7 +4,8 @@
 Default: print an archive-derived request plan, without contacting CDS.
 --download: retrieve required fields, regrid in space, preserve exact UTC times.
 No model training, surface-archive edits, temporal interpolation or credentials
-in this script. Required fields only; optional SST/humidity etc are excluded.
+in this script. --pinn additionally requests co-located pressure-level physics
+fields and actual surface pressure; optional SST/humidity remain excluded.
 """
 from __future__ import annotations
 import argparse
@@ -19,6 +20,31 @@ import xarray as xr
 
 G = 9.80665
 NAMES = ('z850', 'z500', 'z250', 'u850', 'v850')
+PINN_LEVELS = (500, 850)
+
+
+def dynamic_names(pinn=False, pinn_levels=PINN_LEVELS):
+    """Legacy conditioning is unchanged unless physics data are requested."""
+    levels = tuple(pinn_levels)
+    if not pinn:
+        if levels != PINN_LEVELS:
+            raise ValueError('Custom PINN levels require --pinn')
+        return NAMES
+    if levels not in ((500, 850), (250, 500, 850)):
+        raise ValueError('PINN pressure levels must be 500 850 or 250 500 850, in ascending order')
+    return tuple(dict.fromkeys((*NAMES, *(f'{key}{p}' for p in levels for key in ('u','v','t','z','w')), 'sp')))
+
+
+def field_spec(name):
+    """CDS request group, short name, pressure hPa, canonical output units."""
+    if name == 'sp': return 'sp', 'sp', None, 'Pa'
+    key = name[0]
+    return ('z' if key == 'z' else 'uv' if key in 'uv' else 'tw', key,
+            int(name[1:]), {'z':'m', 'u':'m/s', 'v':'m/s', 't':'K', 'w':'Pa/s'}[key])
+
+
+def request_dataset(group):
+    return 'reanalysis-era5-single-levels' if group == 'sp' else 'reanalysis-era5-pressure-levels'
 
 
 def sha256(path):
@@ -58,7 +84,10 @@ def read_target(archive):
     return times, lat, lon
 
 
-def requests_for(times, days_per_request):
+def requests_for(times, days_per_request, pinn=False, pinn_levels=PINN_LEVELS):
+    dynamic_names(pinn, pinn_levels)  # validate before any request is constructed
+    if not 1 <= days_per_request <= 31:
+        raise ValueError('days-per-request must be 1..31')
     dates = pd.DatetimeIndex(times)
     jobs = []
     for month in dates.to_period('M').unique():
@@ -72,10 +101,16 @@ def requests_for(times, days_per_request):
                           time=sorted(set(selected.strftime('%H:%M'))),
                           data_format='netcdf', download_format='unarchived')
             # Separate requests avoid unnecessary u/v at 250 and 500 hPa.
-            jobs.append((selected.values, {
+            requests = {
                 'z': dict(common, variable=['geopotential'], pressure_level=['250', '500', '850']),
                 'uv': dict(common, variable=['u_component_of_wind', 'v_component_of_wind'], pressure_level=['850']),
-            }))
+            }
+            if pinn:
+                levels = [str(p) for p in pinn_levels]
+                requests['uv']['pressure_level'] = levels
+                requests['tw'] = dict(common, variable=['temperature', 'vertical_velocity'], pressure_level=levels)
+                requests['sp'] = dict(common, variable=['surface_pressure'])
+            jobs.append((selected.values, requests))
     first = dates[0]
     terrain = dict(product_type=['reanalysis'], variable=['geopotential'],
                    year=[f'{first.year:04}'], month=[f'{first.month:02}'],
@@ -190,10 +225,23 @@ def extract(path, short, level, selected_times, lat, lon, method, terrain=False)
             elif units != 'm':
                 raise ValueError(f'Unsupported geopotential/height units {units!r}')
             output_unit = 'm'
-        else:
+        elif short in ('u', 'v'):
             if units not in ('m/s', 'm s**-1', 'm s-1'):
                 raise ValueError(f'Unsupported wind units {units!r}')
             output_unit = 'm/s'
+        elif short == 't':
+            if units != 'K': raise ValueError(f'Expected temperature in K, received {units!r}')
+            output_unit = 'K'
+        elif short == 'w':
+            if units not in ('Pa/s', 'Pa s**-1', 'Pa s-1'):
+                raise ValueError(f'Expected pressure velocity Pa/s, not geometric m/s; received {units!r}')
+            output_unit = 'Pa/s'
+        elif short == 'sp':
+            if units != 'Pa': raise ValueError(f'Expected actual surface pressure in Pa, received {units!r}')
+            if np.any(field.values <= 0): raise ValueError('Surface pressure must be positive')
+            output_unit = 'Pa'
+        else:
+            raise ValueError(f'Unsupported ERA5 variable {short!r}')
         result = regrid(field, lat, lon, method)
         result = result.transpose(*(('lat', 'lon') if terrain else ('time', 'lat', 'lon')))
         result.attrs = {'units': output_unit, 'source_units': units,
@@ -201,23 +249,28 @@ def extract(path, short, level, selected_times, lat, lon, method, terrain=False)
         return result
 
 
-def build(archive, output, cache, method, days, download, probe_days=0):
+def build(archive, output, cache, method, days, download, probe_days=0, pinn=False, pinn_levels=PINN_LEVELS):
+    names = dynamic_names(pinn, pinn_levels)
     times, lat, lon = read_target(archive)
     archive_count = len(times)
     if probe_days < 0:
         raise ValueError('probe_days must be nonnegative')
     if probe_days:
         times = times[times < times[0] + np.timedelta64(probe_days, 'D')]
-    jobs, terrain_req = requests_for(times, days)
+    jobs, terrain_req = requests_for(times, days, pinn, pinn_levels)
     plan = dict(start=str(times[0]), end=str(times[-1]), snapshots=len(times),
                 archive_snapshots=archive_count,
                 coverage='full_archive' if len(times) == archive_count else 'probe_subset_not_for_full_training',
-                grid=[len(lat), len(lon)], required_fields=list(NAMES) + ['terrain_height'],
-                maximum_requests_before_cache=2 * len(jobs) + 1, spatial_alignment=method,
-                native_uncompressed_estimate_TB=round(len(times) * 5 * 721 * 1440 * 4 / 1e12, 4),
-                native_uncompressed_estimate_GiB=round(len(times) * 5 * 721 * 1440 * 4 / 2**30, 2),
-                aligned_dynamic_float32_estimate_GB=round(len(times) * 5 * len(lat) * len(lon) * 4 / 1e9, 6),
+                grid=[len(lat), len(lon)], required_fields=list(names) + ['terrain_height'],
+                maximum_requests_before_cache=sum(len(req) for _, req in jobs) + 1, spatial_alignment=method,
+                native_uncompressed_estimate_TB=round(len(times) * len(names) * 721 * 1440 * 4 / 1e12, 4),
+                native_uncompressed_estimate_GiB=round(len(times) * len(names) * 721 * 1440 * 4 / 2**30, 2),
+                aligned_dynamic_float32_estimate_GB=round(len(times) * len(names) * len(lat) * len(lon) * 4 / 1e9, 6),
                 note='Native 0.25-degree downloads can be large. Estimate excludes request supersets and overhead; no optional fields. Exact archive times retained.')
+    if pinn:
+        plan.update(pinn=True, pinn_levels_hpa=list(pinn_levels),
+                    field_units={name:field_spec(name)[3] for name in names},
+                    note='PINN pressure-level u/v/t/z/w and actual sp included. ERA5 z is converted once to height m; w remains pressure velocity Pa/s. Exact archive times retained.')
     print(json.dumps(plan, indent=2), flush=True)
     if not download:
         print('Plan only. Add --download after configuring CDS credentials and accepting dataset terms.')
@@ -246,21 +299,22 @@ def build(archive, output, cache, method, days, download, probe_days=0):
             nc.archive_snapshots = archive_count
             nc.spatial_alignment = method
             nc.time_alignment = 'exact UTC source selection; no temporal interpolation'
-            for name in NAMES:
+            for name in names:
                 v = nc.createVariable(name, 'f4', ('time', 'lat', 'lon'), zlib=True)
-                v.units = 'm' if name.startswith('z') else 'm/s'
+                v.units = field_spec(name)[3]
             terrain_path = retrieve(client, cache, 'reanalysis-era5-single-levels', terrain_req)
             terrain = extract(terrain_path, 'z', None, times[:1], lat, lon, method, terrain=True)
             tv = nc.createVariable('terrain_height', 'f4', ('lat', 'lon'), zlib=True)
             tv.units = 'm'; tv[:] = terrain.values
             sources.append({'path': str(terrain_path), 'sha256': sha256(terrain_path)})
             for i, (selected, requests) in enumerate(jobs):
-                files = {k: retrieve(client, cache, 'reanalysis-era5-pressure-levels', req) for k, req in requests.items()}
+                files = {k: retrieve(client, cache, request_dataset(k), req) for k, req in requests.items()}
                 indices = np.searchsorted(times, selected)
                 if not np.array_equal(times[indices], selected):
                     raise ValueError('Internal archive index mismatch')
-                for name in NAMES:
-                    field = extract(files['z' if name.startswith('z') else 'uv'], name[0], int(name[1:]), selected, lat, lon, method)
+                for name in names:
+                    group, short, level, _ = field_spec(name)
+                    field = extract(files[group], short, level, selected, lat, lon, method)
                     nc.variables[name][indices, :, :] = field.values
                 sources.extend({'path': str(p), 'sha256': sha256(p)} for p in files.values())
                 nc.sync(); print(f'Aligned block {i + 1}/{len(jobs)}', flush=True)
@@ -268,7 +322,7 @@ def build(archive, output, cache, method, days, download, probe_days=0):
         os.link(temporary, output)
         provenance = {**plan, 'archive': str(archive), 'archive_sha256': sha256(archive),
                       'output_sha256': sha256(output), 'source_files': sources,
-                      'scope': 'Required extra fields only. Not a trained model or ERA5 forecast.'}
+                      'scope': 'A physics inputs included; no training or forecast performed.' if pinn else 'Required extra fields only. Not a trained model or ERA5 forecast.'}
         with open(output.with_suffix('.provenance.json'), 'x') as f:
             json.dump(provenance, f, indent=2)
         print(f'Prepared: {output}', flush=True)
@@ -288,13 +342,16 @@ def main():
     parser.add_argument('--probe-days', type=int, default=0,
                         help='First N days only, for authentication/format checks; NOT a full-archive training input')
     parser.add_argument('--download', action='store_true')
+    parser.add_argument('--pinn', action='store_true', help='Add pressure-level u/v/t/z/w and surface pressure sp')
+    parser.add_argument('--pinn-levels', nargs='+', type=int, choices=[250,500,850], default=list(PINN_LEVELS))
     args = parser.parse_args()
     if not 1 <= args.days_per_request <= 31:
         parser.error('--days-per-request must be 1..31')
     if args.probe_days < 0:
         parser.error('--probe-days must be nonnegative')
     output = args.output or ('/workspace/data/era5-extra-probe.nc' if args.probe_days else '/workspace/data/era5-extra-aligned.nc')
-    build(args.archive, output, args.cache, args.regrid, args.days_per_request, args.download, args.probe_days)
+    build(args.archive, output, args.cache, args.regrid, args.days_per_request, args.download, args.probe_days,
+          args.pinn, args.pinn_levels)
 
 
 if __name__ == '__main__':

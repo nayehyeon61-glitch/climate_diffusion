@@ -1,5 +1,10 @@
 # Climate Flow: Manifold MoE, Full-state MoE 및 Dynamics 구조
 
+## A Hybrid PINN (2026-09-22)
+
+- [18-a-hybrid-pinn.md](18-a-hybrid-pinn.md): 구면·기압좌표 PDE, 물리 시간 변화와 A gradient 경로
+- [입력·실행 매뉴얼](../flow-matching_moe/A_HYBRID_PINN_MANUAL.md): Z·지형과 추가 상층장 준비, A warm-up, B/C 인계
+
 ## 분리형 A information/process 보강 (2026-09-16)
 
 - [16-separate-a-information-process.md](16-separate-a-information-process.md): A 전용 확률 sampler, 정보 가용시간, B 동결과 두 시간축

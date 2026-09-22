@@ -16,18 +16,22 @@ import sys
 
 import numpy as np
 
-from prepare_era5_extra import read_target, requests_for, retrieve, extract, NAMES
-from climate_diffusion.physical_information import FORMAT, PRIMARY, digest, terrain_slope
+from prepare_era5_extra import (
+    read_target, requests_for, retrieve, extract, dynamic_names, field_spec,
+    request_dataset, PINN_LEVELS,
+)
+from climate_diffusion.physical_information import FORMAT, digest, terrain_slope, canonical_unit
 from climate_diffusion.information_shards import (
     STORE_FORMAT, InformationShards, publish, publish_json, read_json, sync_directory,
 )
 
 
-def plan_for(archive, method, days):
+def plan_for(archive, method, days, pinn=False, pinn_levels=PINN_LEVELS):
     if not 1 <= days <= 31:
         raise ValueError('days-per-request must be 1..31')
     times, lat, lon = read_target(archive)
-    jobs, terrain_request = requests_for(times, days)
+    names = dynamic_names(pinn, pinn_levels)
+    jobs, terrain_request = requests_for(times, days, pinn, pinn_levels)
     ranges = []
     for selected, _ in jobs:
         start = int(np.searchsorted(times, selected[0]))
@@ -38,7 +42,10 @@ def plan_for(archive, method, days):
                 start=str(times[0]), stop=str(times[-1]), snapshots=len(times),
                 grid=dict(lat=lat.tolist(), lon=lon.tolist()), ranges=ranges,
                 spatial_alignment=method, days_per_request=days,
-                fields=list(PRIMARY), time_policy='exact UTC 6h, no temporal interpolation')
+                fields=list(names)+['terrain_height','terrain_slope'], time_policy='exact UTC 6h, no temporal interpolation')
+    if pinn:
+        plan.update(pinn=True, pinn_levels_hpa=list(pinn_levels),
+                    field_units={name:canonical_unit(name) for name in plan['fields']})
     return plan, times, lat, lon, jobs, terrain_request
 
 
@@ -69,8 +76,10 @@ def clean_raw(raw, sources):
         # Small request receipt is retained as provenance, never used as data.
 
 
-def produce(archive, store, method='linear', days=3, delete_raw=False, client=None, on_commit=None):
-    plan, times, lat, lon, jobs, terrain_request = plan_for(archive, method, days)
+def produce(archive, store, method='linear', days=3, delete_raw=False, client=None, on_commit=None,
+            pinn=False, pinn_levels=PINN_LEVELS):
+    plan, times, lat, lon, jobs, terrain_request = plan_for(archive, method, days, pinn, pinn_levels)
+    names = dynamic_names(pinn, pinn_levels)
     store = Path(store)
     if store.is_symlink():
         raise ValueError('Store must not be a symlink')
@@ -127,12 +136,14 @@ def produce(archive, store, method='linear', days=3, delete_raw=False, client=No
                 raise ValueError('Invalid committed terrain')
             if not np.allclose(terrain[1], terrain_slope(terrain[0], lat, lon), rtol=1e-6, atol=1e-9):
                 raise ValueError('Terrain slope validation failed')
-        variables = [dict(name=name, unit='1' if name=='terrain_slope' else 'm/s' if name.startswith(('u','v')) else 'm',
-                          source_unit='validated CDS units; z divided by 9.80665; slope derived',
+        variables = [dict(name=name, unit=canonical_unit(name),
+                          source_unit=('validated CDS SI units; z divided by 9.80665 once; w is Pa/s; sp is Pa; slope derived'
+                                       if pinn else 'validated CDS units; z divided by 9.80665; slope derived'),
                           kind='static' if name.startswith('terrain_') else 'dynamic',
-                          pressure_hpa=int(name[1:]) if name in NAMES else None) for name in PRIMARY]
+                          pressure_hpa=int(name[1:]) if name[0] in 'zutvqw' and name[1:].isdigit() else None)
+                     for name in plan['fields']]
         meta = dict(format=FORMAT, surface_sha256=plan['surface_sha256'], source_sha256=plan_sha,
-                    variables=variables, grid=plan['grid'], shape=[7,len(lat),len(lon)],
+                    variables=variables, grid=plan['grid'], shape=[len(plan['fields']),len(lat),len(lon)],
                     time_policy='UTC exact 6h; origin information fixed throughout forecast',
                     msl='already in surface input; not duplicated', terrain_sha256=digest(terrain_path))
         metadata_path = store/'metadata.json'
@@ -150,9 +161,11 @@ def produce(archive, store, method='linear', days=3, delete_raw=False, client=No
             path, receipt = reader.chunk_path(i), reader.receipt_path(i)
             if not receipt.exists():
                 if not path.exists():
-                    files = {k: get('reanalysis-era5-pressure-levels', req) for k, req in requests.items()}
-                    arrays = [extract(files['z' if name.startswith('z') else 'uv'], name[0], int(name[1:]),
-                                      selected, lat, lon, method).values for name in NAMES]
+                    files = {k: get(request_dataset(k), req) for k, req in requests.items()}
+                    arrays = []
+                    for name in names:
+                        group, short, level, _ = field_spec(name)
+                        arrays.append(extract(files[group], short, level, selected, lat, lon, method).values)
                     arrays.extend(np.broadcast_to(t, (len(selected), *t.shape)) for t in terrain)
                     data = np.stack(arrays, axis=1).reshape(len(selected), -1).astype(np.float32)
                     sources = raw_sources(files.values())
@@ -242,6 +255,8 @@ def main():
     p.add_argument('--delete-raw', action='store_true')
     p.add_argument('--history-steps', type=int, default=6)
     p.add_argument('--history-stride', type=int, default=4)
+    p.add_argument('--pinn', action='store_true', help='Add pressure-level u/v/t/z/w and actual surface pressure sp')
+    p.add_argument('--pinn-levels', nargs='+', type=int, choices=[250,500,850], default=list(PINN_LEVELS))
     args = p.parse_args()
     if args.check_ready:
         try:
@@ -252,9 +267,10 @@ def main():
     elif args.prune_verified_raw:
         print(json.dumps(prune_verified_raw(args.store,args.archive)))
     elif args.download:
-        produce(args.archive,args.store,args.regrid,args.days_per_request,args.delete_raw)
+        produce(args.archive,args.store,args.regrid,args.days_per_request,args.delete_raw,
+                pinn=args.pinn,pinn_levels=args.pinn_levels)
     else:
-        plan, *_ = plan_for(args.archive,args.regrid,args.days_per_request)
+        plan, *_ = plan_for(args.archive,args.regrid,args.days_per_request,args.pinn,args.pinn_levels)
         print(json.dumps({**plan, 'note':'PLAN ONLY; --download starts CDS requests; --delete-raw removes verified owned originals'}, indent=2))
     return 0
 

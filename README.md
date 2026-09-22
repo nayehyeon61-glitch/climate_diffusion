@@ -1,6 +1,16 @@
 # Climate Diffusion: Latent Dynamics + Flow Matching
 
-## 이 브랜치: 분리형 A 정보·확률과정 보강
+## 이 브랜치: 분리형 A에 Hybrid PINN 추가
+
+`feature/a-hybrid-pinn-physics`는 `feature/a-manifold-information-process`의 A/B/C 분리와
+Z·지형 입력을 유지하면서 **A의 실제 6시간 변화에 구면·기압좌표 물리 제약**을 추가한다.
+동일 기압면의 바람·온도·Z·연직속도와 지면기압을 함께 사용하며, 작은 학습 closure를 둔다.
+`PINN=1` 또는 A trainer의 `--pinn`으로 활성화한다. B/C는 새 A checkpoint를 이어받는다.
+**[PINN 입력 준비·A/B/C 실행 매뉴얼](flow-matching_moe/A_HYBRID_PINN_MANUAL.md)** ·
+[물리 손실과 gradient 경로](struct-picture/18-a-hybrid-pinn.md).
+실제 ERA5 예측 성능 향상은 별도 재학습·검증이 필요하다.
+
+## 기반: 분리형 A 정보·확률과정 보강
 
 `feature/a-manifold-information-process`는 A/B 분리를 유지한다. A에 Z850/Z500/Z250,
 U850/V850, 지형 고도·경사를 별도 conditioning으로 추가하고 surface 출력4변수는 유지한다.

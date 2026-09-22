@@ -38,7 +38,8 @@ def load_checkpoint(path,device='cpu'):
     manifest=Path(path).with_suffix('.manifest.json')
     if not manifest.exists() or json.loads(manifest.read_text())['checkpoint_sha256']!=digest(path):
         raise ValueError('Checkpoint manifest/hash mismatch')
-    model=InformationProcess(ManifoldMoEConfig(**p['config']),p['schema'],p['mean'],p['scale'],p['statistics'],p['information_metadata'])
+    model=InformationProcess(ManifoldMoEConfig(**p['config']),p['schema'],p['mean'],p['scale'],p['statistics'],p['information_metadata'],
+        pinn_config=p.get('pinn_config'),information_mean=p.get('information_mean'),information_scale=p.get('information_scale'))
     model.load_state_dict(p['model']);model.set_phase(p['stage']);model.to(device)
     return model,p
 
@@ -86,13 +87,26 @@ def data_contract(archive,information_path,mode,config,parent=None):
 def batch_loss(model,batch,args,epoch,streams):
     info=batch.get('information');truth=torch.cat((batch['origin'][:,None],batch['targets']),1)
     aux=model.phase=='A'
+    pc=model.pinn.config if aux and model.pinn is not None else None
+    warmup=pc is not None and epoch<=pc.warmup_epochs
+    if warmup:
+        metrics=model.pinn_losses(batch,warmup=True)
+        metrics['weighted_pinn']=pc.weight*metrics['pinn_total']
+        metrics['loss']=metrics['weighted_pinn']
+        metrics['selection']=metrics['pinn_total']
+        metrics['pinn_weight']=metrics['loss'].new_tensor(pc.weight)
+        metrics['pinn_warmup']=metrics['loss'].new_tensor(1.)
+        for k,v in metrics.items():
+            if not bool(torch.isfinite(v)):raise FloatingPointError(f'Nonfinite {k}')
+        return metrics
+    schedule_epoch=epoch-(pc.warmup_epochs if pc is not None else 0)
     generated,qs=model.rollout(batch['history'],info,members=args.members,tau_steps=args.tau_steps,
         generator=streams['ensemble'],auxiliary=aux,return_q=True)
     metrics=model.scores(generated,truth,batch['dt_hours'],batch['pair_observed_mask'])
     teacher=model.teacher_loss(batch,info,streams['fm']);metrics.update(teacher)
     if model.phase=='A':
         metrics.update(model.geometry_losses(batch,info))
-        phase,weights=curriculum(epoch,args.curriculum_interval)
+        phase,weights=curriculum(schedule_epoch,args.curriculum_interval)
         if args.profile!='process':
             phase=2 if args.profile=='dynamics' else 1
             _,weights=curriculum(3 if phase==2 else 1,2)
@@ -109,6 +123,13 @@ def batch_loss(model,batch,args,epoch,streams):
         total=generated.sum()*0
         for key,weight in weights.items():
             if key in metrics:metrics['weighted_'+key]=metrics[key]*weight;total=total+metrics['weighted_'+key]
+        if pc is not None:
+            metrics.update(model.pinn_losses(batch))
+            weight=pc.weight*min(1.,schedule_epoch/pc.ramp_epochs)
+            metrics['pinn_weight']=generated.new_tensor(weight)
+            metrics['pinn_warmup']=generated.new_tensor(0.)
+            metrics['weighted_pinn']=weight*metrics['pinn_total']
+            total=total+metrics['weighted_pinn']
         # Fixed validation selection below is independent of curriculum weights.
     else:
         ramp=min(1.,epoch/(5 if model.phase=='B' else 3))
@@ -132,6 +153,9 @@ def batch_loss(model,batch,args,epoch,streams):
     metrics['loss']=total
     metrics['selection']=metrics['state_crps']+metrics['transition_crps']+.1*metrics['loss_trajectory']+.1*metrics['mean_state']
     if aux:metrics['selection']=metrics['selection']+metrics['reconstruction']+.05*(metrics['ae_delta']+metrics['decoded_drift'])
+    if pc is not None:
+        # Fixed plateau weight for selection; independent of the training ramp.
+        metrics['selection']=metrics['selection']+pc.weight*metrics['pinn_total']
     for k,v in metrics.items():
         if not bool(torch.isfinite(v)):raise FloatingPointError(f'Nonfinite {k}')
     return metrics
@@ -155,8 +179,20 @@ def train(args):
         if args.stage!='A' or not isinstance(overrides,dict) or set(overrides)-set(curriculum(999)[1]):
             raise ValueError('Loss overrides are named A curriculum weights only')
         if any(not math.isfinite(float(v)) or float(v)<0 for v in overrides.values()):raise ValueError('Invalid A loss weight')
-    if args.stage=='A' and args.profile=='process' and args.epochs<5*args.curriculum_interval+1:
-        raise ValueError('Process A must reach phase6 before best/seal; require >=5*interval+1 epochs')
+    pinn_config=None
+    if getattr(args,'pinn',False):
+        from .hybrid_pinn import HybridPINNConfig
+        if args.stage!='A' or args.mode!='enriched':
+            raise ValueError('--pinn enables enriched stage A only; B/C inherit it from the parent')
+        pinn_config=HybridPINNConfig(levels_hpa=tuple(args.pinn_levels),weight=args.pinn_weight,
+            warmup_epochs=args.pinn_warmup_epochs,ramp_epochs=args.pinn_ramp_epochs)
+        pinn_config.validate()
+    warmup_epochs=pinn_config.warmup_epochs if pinn_config else 0
+    if args.stage=='A':
+        min_joint=5*args.curriculum_interval+1 if args.profile=='process' else 1
+        if pinn_config:min_joint=max(min_joint,pinn_config.ramp_epochs)
+        if args.epochs<warmup_epochs+min_joint:
+            raise ValueError(f'A must complete warm-up, curriculum and PINN ramp; require >={warmup_epochs+min_joint} epochs')
     torch.manual_seed(args.seed);np.random.seed(args.seed)
     device=args.device;parent=None
     if args.stage!='A':
@@ -175,7 +211,8 @@ def train(args):
             expert_latent_dim=args.expert_latent_dim,gate_hidden_dim=args.gate_hidden_dim,forecast_dynamics='recurrent_residual')
     d=data_contract(args.archive,args.information,args.mode,config,parent)
     if parent is None:
-        model=InformationProcess(config,d['schema'],d['mean'],d['scale'],d['statistics'],d['information_metadata']).to(device)
+        model=InformationProcess(config,d['schema'],d['mean'],d['scale'],d['statistics'],d['information_metadata'],
+            pinn_config=pinn_config,information_mean=d['information_mean'],information_scale=d['information_scale']).to(device)
         model.core.physics.fit(torch.as_tensor((d['states'][:d['train_end']]-d['mean'])/d['scale'],device=device))
     model.set_phase(args.stage)
     args.info_scale=d['information_scale'];args.info_tendency_scale=d['information_tendency_scale']
@@ -200,6 +237,8 @@ def train(args):
     rows=[];best=float('inf');best_state=None;best_epoch=0;start=time.perf_counter()
     if str(device).startswith('cuda'):torch.cuda.reset_peak_memory_stats()
     for epoch in range(1,args.epochs+1):
+        if args.stage=='A' and model.pinn is not None:
+            model.set_pinn_warmup(epoch<=model.pinn.config.warmup_epochs)
         record={'epoch':epoch}
         for is_train,dl in zip((True,False),loaders):
             model.train(is_train);sums={};count=0
@@ -214,9 +253,9 @@ def train(args):
                             modules={'encoder':model.core.manifold.encoder,'decoder':model.core.manifold.decoder,
                                      'drift':model.core.manifold.latent_drift,'a_sampler':model.a_sampler,
                                      'information':model.information,'experts':model.core.experts,'gate':model.core.gate,
-                                     'history':model.core.history_encoder}
+                                     'history':model.core.history_encoder,'info_decoder':model.info_head,'pinn':model.pinn}
                             selected={k:values[k] for k in ('reconstruction','ae_delta','decoded_drift','static_l2','information_geometry',
-                                'fm','state_crps','transition_crps','loss_trajectory') if k in values}
+                                'fm','state_crps','transition_crps','loss_trajectory','pinn_total','pinn_surface_tendency') if k in values}
                             selected.update({k:v for k,v in values.items() if k.startswith('weighted_')})
                             record['gradient_first_batch']=gradient_diagnostics(selected,{k:list(m.parameters()) for k,m in modules.items() if m is not None})
                         opt.zero_grad(set_to_none=True);values['loss'].backward()
@@ -224,7 +263,7 @@ def train(args):
                     b=len(batch['origin']);count+=b
                     for k,v in values.items():sums[k]=sums.get(k,0.)+float(v.detach())*b
             record['train' if is_train else 'validation']={k:v/count for k,v in sums.items()}
-        eligible=args.stage!='A' or args.profile!='process' or epoch>=5*args.curriculum_interval+1
+        eligible=args.stage!='A' or epoch>=warmup_epochs+min_joint
         record['eligible_for_best']=eligible
         if eligible and record['validation']['selection']<best:
             best=record['validation']['selection'];best_epoch=epoch
@@ -234,6 +273,7 @@ def train(args):
         rows.append(record);print(json.dumps({'stage':args.stage,'epoch':epoch,'selection':record['validation']['selection']},allow_nan=False),flush=True)
         if args.patience and best_state is not None and epoch-best_epoch>=args.patience:break
     model.load_state_dict(best_state)
+    model.set_phase(args.stage)
     if args.stage=='A':
         chosen=rows[best_epoch-1]['validation']
         if args.a_quality_max is not None and max(chosen['ae_delta'],chosen['decoded_drift'])>args.a_quality_max:
@@ -250,6 +290,7 @@ def train(args):
         if isinstance(v,np.ndarray):persisted[k]=v.tolist()
     options={k:v for k,v in vars(args).items() if not k.startswith('info_')}
     payload={**persisted,'format':FORMAT,'stage':args.stage,'mode':args.mode,'config':asdict(config),'model':model.state_dict(),
+        'pinn_config':asdict(model.pinn.config) if model.pinn is not None else None,
         'options':options,'best_epoch':best_epoch,'best_selection':best,'archive_sha256':digest(args.archive),
         'information_sha256':information_digest(args.information) if args.information else None,
         'information_shards':d['information'].provenance() if hasattr(d['information'],'provenance') else None,'parent_sha256':digest(args.init) if args.init else None,
@@ -277,5 +318,10 @@ def main(argv=None):
     p.add_argument('--b-member-weight',type=float,default=.001)
     p.add_argument('--loss-weights',help='A-only JSON plateau coefficients; preserves six-phase activation schedule')
     p.add_argument('--a-quality-max',type=float);p.add_argument('--gradient-audit',action='store_true')
+    p.add_argument('--pinn',action='store_true',help='Add physical-time Hybrid PINN to enriched A; B/C inherit frozen physics')
+    p.add_argument('--pinn-levels',nargs='+',type=int,default=[500,850])
+    p.add_argument('--pinn-weight',type=float,default=.1)
+    p.add_argument('--pinn-warmup-epochs',type=int,default=1)
+    p.add_argument('--pinn-ramp-epochs',type=int,default=3)
     p.add_argument('--device',default='cpu');a=p.parse_args(argv);print(train(a));return 0
 if __name__=='__main__':main()

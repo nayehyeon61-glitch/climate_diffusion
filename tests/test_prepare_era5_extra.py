@@ -32,9 +32,11 @@ def source(request, terrain=False):
     base = np.broadcast_to(lat[:, None] / 10 + np.cos(lon[None, :] * np.pi / 180), (5, 8))
     fields = {}
     for variable in request['variable']:
-        short = {'geopotential': 'z', 'u_component_of_wind': 'u', 'v_component_of_wind': 'v'}[variable]
-        if terrain:
-            da = xr.DataArray(np.broadcast_to((100 + base) * p.G, (len(times), 5, 8)),
+        short = {'geopotential': 'z', 'u_component_of_wind': 'u', 'v_component_of_wind': 'v',
+                 'temperature':'t', 'vertical_velocity':'w', 'surface_pressure':'sp'}[variable]
+        if 'pressure_level' not in request:
+            values = (100 + base) * p.G if short=='z' else 100000 + base
+            da = xr.DataArray(np.broadcast_to(values, (len(times), 5, 8)),
                               dims=['valid_time', 'latitude', 'longitude'],
                               coords=dict(valid_time=times, latitude=lat, longitude=lon))
         else:
@@ -46,7 +48,8 @@ def source(request, terrain=False):
                               dims=['valid_time', 'pressure_level', 'latitude', 'longitude'],
                               coords=dict(valid_time=times, pressure_level=lev, latitude=lat, longitude=lon))
             da.pressure_level.attrs['units'] = 'hPa'
-        da.attrs['units'] = 'm**2 s**-2' if short == 'z' else 'm s**-1'
+        da.attrs['units'] = {'z':'m**2 s**-2','u':'m s**-1','v':'m s**-1',
+                             't':'K','w':'Pa s**-1','sp':'Pa'}[short]
         fields[short] = da
     return xr.Dataset(fields)
 

@@ -24,7 +24,8 @@ def fair_crps(x,y,weight=None):
     return (score*weight).sum()/weight.expand_as(score).sum()
 
 class InformationProcess(nn.Module):
-    def __init__(self,config,schema,mean,scale,statistics,info_metadata=None):
+    def __init__(self,config,schema,mean,scale,statistics,info_metadata=None,
+                 pinn_config=None,information_mean=None,information_scale=None):
         super().__init__()
         self.core=ManifoldMoE(config,schema,mean,scale)
         self.temporal=TemporalObjective(schema,mean,scale,statistics)
@@ -37,6 +38,13 @@ class InformationProcess(nn.Module):
         # Raw-z coordinates make A's own sampler invariant to the later q seal.
         self.a_context=mlp(r,h,c)
         self.a_sampler=mlp(2*r+c+2,h,r)
+        self.pinn=None
+        if pinn_config is not None:
+            from .hybrid_pinn import HybridPINN, HybridPINNConfig
+            if isinstance(pinn_config,dict):pinn_config=HybridPINNConfig(**pinn_config)
+            if info_metadata is None or information_mean is None or information_scale is None:
+                raise ValueError('Hybrid PINN requires enriched information and its training-only normalization')
+            self.pinn=HybridPINN(pinn_config,info_metadata,information_mean,information_scale,r,h)
         self.phase='A';self.set_phase('A')
 
     @property
@@ -50,7 +58,40 @@ class InformationProcess(nn.Module):
         if phase=='A':
             self.a_sampler.requires_grad_(True);self.a_context.requires_grad_(True)
             if self.info_head is not None:self.info_head.requires_grad_(True)
+            if self.pinn is not None:self.pinn.requires_grad_(True)
         if self.reference_information is not None:self.reference_information.requires_grad_(False)
+
+    def set_pinn_warmup(self,enabled):
+        """Warm up the closure on observed physical pairs; then restore ordinary A."""
+        if self.phase!='A' or self.pinn is None:
+            raise ValueError('PINN warm-up is only available in enabled stage A')
+        self.set_phase('A')
+        if enabled:
+            self.requires_grad_(False)
+            self.pinn.requires_grad_(True)
+
+    def pinn_losses(self,batch,warmup=False):
+        """Physical 6h dynamics of decoded A fields, never FM integration time tau.
+
+        Upper-air equations constrain info_head, encoder and latent_drift. The
+        accompanying observed surface tendency retains a gradient to the surface
+        decoder without applying pressure-level equations to 10m/2m fields.
+        """
+        if self.pinn is None or self.phase!='A':
+            raise ValueError('Hybrid PINN loss is an enabled A-only objective')
+        information=batch['information'];future=batch['information_targets'][:,0]
+        z=self.raw_encode(batch['origin'],information)
+        dt=batch['dt_hours'][:,0]
+        if warmup:
+            return self.pinn(information.detach(),future.detach(),information,future,z.detach(),dt)
+        next_z=z+dt[:,None]/24*self.core.manifold.latent_drift(z)
+        values=self.pinn(self.info_head(z),self.info_head(next_z),information,future,z,dt)
+        surface0=self.core.manifold.decode(z);surface1=self.core.manifold.decode(next_z)
+        t=self.temporal
+        error=((surface1-surface0)-(batch['targets'][:,0]-batch['origin']))*t.scale/dt[:,None]/t.tendency_scale
+        values['pinn_surface_tendency']=(error.square()*t.metric).sum(-1).mean()
+        values['pinn_total']=values['pinn_total']+self.pinn.config.tendency_weight*values['pinn_surface_tendency']
+        return values
 
     def raw_encode(self,x,information=None,reference=False):
         if reference:
